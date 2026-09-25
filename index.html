@@ -1,53 +1,740 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
 <title>山寨币合约 V1 回测器</title>
+
 <style>
-body{margin:0;background:#f5f6f8;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;color:#111}
-.wrap{max-width:720px;margin:auto;padding:18px}.card{background:#fff;border-radius:18px;padding:18px;margin:12px 0;box-shadow:0 3px 16px #0000000d}
-h1{font-size:25px;margin:4px 0 8px}.muted{color:#70757d;font-size:14px}
-button{width:100%;border:0;border-radius:13px;padding:15px;font-size:17px;background:#111;color:#fff}
-button:disabled{opacity:.5}.metric{display:grid;grid-template-columns:1fr 1fr;gap:10px}.m{background:#f1f2f4;border-radius:13px;padding:12px}.v{font-size:21px;font-weight:700;margin-top:5px}
-pre{white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.5}
-</style></head>
-<body><div class="wrap">
-<div class="card"><h1>Quant V1 · 山寨币合约回测</h1>
-<div class="muted">Binance USDT 永续 · 4H · 多空 · 公开行情数据 · 不下单</div><br>
-<button id="go" onclick="run()">开始回测</button></div>
-<div class="card"><div id="status" class="muted">等待开始</div><div class="metric">
-<div class="m">交易次数<div class="v" id="trades">—</div></div>
-<div class="m">胜率<div class="v" id="win">—</div></div>
-<div class="m">组合收益<div class="v" id="ret">—</div></div>
-<div class="m">币种<div class="v" id="coins">—</div></div></div></div>
-<div class="card"><h3>策略</h3><pre>EMA50 / EMA200 趋势
+*{
+  box-sizing:border-box;
+}
+
+body{
+  margin:0;
+  background:#f5f6f8;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",
+               "Helvetica Neue",Arial,sans-serif;
+  color:#111;
+}
+
+.wrap{
+  max-width:720px;
+  margin:auto;
+  padding:18px;
+}
+
+.card{
+  background:#fff;
+  border-radius:18px;
+  padding:18px;
+  margin:12px 0;
+  box-shadow:0 3px 16px #0000000d;
+}
+
+h1{
+  font-size:25px;
+  margin:4px 0 8px;
+}
+
+h3{
+  margin-top:0;
+}
+
+.muted{
+  color:#70757d;
+  font-size:14px;
+  line-height:1.6;
+}
+
+button{
+  width:100%;
+  border:0;
+  border-radius:13px;
+  padding:15px;
+  font-size:17px;
+  background:#111;
+  color:#fff;
+  cursor:pointer;
+}
+
+button:disabled{
+  opacity:.5;
+  cursor:not-allowed;
+}
+
+.metric{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin-top:12px;
+}
+
+.m{
+  background:#f1f2f4;
+  border-radius:13px;
+  padding:12px;
+}
+
+.v{
+  font-size:21px;
+  font-weight:700;
+  margin-top:5px;
+}
+
+.progress{
+  height:8px;
+  background:#e5e7eb;
+  border-radius:999px;
+  overflow:hidden;
+  margin-top:12px;
+}
+
+.progress-bar{
+  height:100%;
+  width:0%;
+  background:#111;
+  transition:width .2s;
+}
+
+.result-list{
+  margin-top:12px;
+}
+
+.result-row{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  padding:9px 0;
+  border-bottom:1px solid #eee;
+  font-size:14px;
+}
+
+.result-row:last-child{
+  border-bottom:0;
+}
+
+.ok{
+  color:#188038;
+}
+
+.fail{
+  color:#c5221f;
+}
+
+pre{
+  white-space:pre-wrap;
+  word-break:break-word;
+  font-size:13px;
+  line-height:1.5;
+  margin:0;
+}
+
+.small{
+  font-size:12px;
+  color:#70757d;
+  margin-top:8px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="wrap">
+
+  <!-- 标题 -->
+  <div class="card">
+
+    <h1>Quant V1 · 山寨币合约回测</h1>
+
+    <div class="muted">
+      Binance USDT 永续 · 4H · 多空 · 公开行情数据 · 不下单
+    </div>
+
+    <br>
+
+    <button id="go" onclick="run()">
+      开始回测
+    </button>
+
+    <div class="progress">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+
+  </div>
+
+
+  <!-- 总体结果 -->
+  <div class="card">
+
+    <div id="status" class="muted">
+      等待开始
+    </div>
+
+    <div class="metric">
+
+      <div class="m">
+        交易次数
+        <div class="v" id="trades">—</div>
+      </div>
+
+      <div class="m">
+        胜率
+        <div class="v" id="win">—</div>
+      </div>
+
+      <div class="m">
+        组合收益
+        <div class="v" id="ret">—</div>
+      </div>
+
+      <div class="m">
+        币种
+        <div class="v" id="coins">—</div>
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <!-- 每个币的结果 -->
+  <div class="card">
+
+    <h3>币种回测结果</h3>
+
+    <div id="results" class="result-list">
+      <div class="muted">
+        点击“开始回测”后显示结果
+      </div>
+    </div>
+
+  </div>
+
+
+  <!-- 策略 -->
+  <div class="card">
+
+    <h3>策略</h3>
+
+    <pre>EMA50 / EMA200 趋势
 20 根 4H 动量
 ATR 1.5 倍止损
 多空双向
 基础手续费模拟 0.1%
-仅用于研究，不代表未来收益</pre></div>
+
+仅用于研究，不代表未来收益</pre>
+
+  </div>
+
 </div>
+
+
 <script>
-const symbols=["SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","SUIUSDT","APTUSDT","NEARUSDT","INJUSDT"];
-function ema(a,n){let k=2/(n+1),e=a[0],o=[e];for(let i=1;i<a.length;i++){e=a[i]*k+e*(1-k);o.push(e)}return o}
-async function get(s){let u="https://fapi.binance.com/fapi/v1/klines?symbol="+s+"&interval=4h&limit=1000";let r=await fetch(u);if(!r.ok)throw Error(s+" "+r.status);let x=await r.json();return x.map(z=>({h:+z[2],l:+z[3],c:+z[4]}))}
+
+/* =========================
+   回测币种
+========================= */
+
+const symbols = [
+  "SOLUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
+  "ADAUSDT",
+  "AVAXUSDT",
+  "LINKUSDT",
+  "SUIUSDT",
+  "APTUSDT",
+  "NEARUSDT",
+  "INJUSDT"
+];
+
+
+/* =========================
+   EMA
+========================= */
+
+function ema(a,n){
+
+  const k = 2 / (n + 1);
+
+  let e = a[0];
+
+  const o = [e];
+
+  for(let i = 1; i < a.length; i++){
+
+    e = a[i] * k + e * (1 - k);
+
+    o.push(e);
+  }
+
+  return o;
+}
+
+
+/* =========================
+   获取 Binance 行情
+   注意：
+   这里不再直接访问 Binance
+   而是访问自己的服务器
+========================= */
+
+async function get(s){
+
+  const url =
+    "/api/klines" +
+    "?symbol=" + encodeURIComponent(s) +
+    "&interval=4h" +
+    "&limit=1000";
+
+  const r = await fetch(url, {
+    method:"GET",
+    cache:"no-store"
+  });
+
+  if(!r.ok){
+
+    throw new Error(
+      s + " HTTP " + r.status
+    );
+  }
+
+  const x = await r.json();
+
+  if(!Array.isArray(x)){
+
+    throw new Error(
+      s + " 返回的数据不是数组"
+    );
+  }
+
+  if(x.length < 220){
+
+    throw new Error(
+      s + " K线数量不足：" + x.length
+    );
+  }
+
+  return x.map(z => ({
+    h: Number(z[2]),
+    l: Number(z[3]),
+    c: Number(z[4])
+  }));
+}
+
+
+/* =========================
+   单币种回测
+========================= */
+
 function calc(d){
- let c=d.map(x=>x.c),e50=ema(c,50),e200=ema(c,200),tr=[],pos=0,entry=0;
- let atr=d.map((x,i)=>i<13?NaN:d.slice(i-13,i+1).reduce((a,y)=>a+y.h-y.l,0)/14);
- for(let i=200;i<d.length;i++){let mom=c[i]/c[i-20]-1,a=atr[i];if(!isFinite(a))continue;
-  if(!pos){if(e50[i]>e200[i]&&mom>0){pos=1;entry=c[i]}else if(e50[i]<e200[i]&&mom<0){pos=-1;entry=c[i]}}
-  else if(pos===1&&(c[i]<=entry-1.5*a||!(e50[i]>e200[i]&&mom>0))){tr.push((c[i]-entry)/entry-.001);pos=0}
-  else if(pos===-1&&(c[i]>=entry+1.5*a||!(e50[i]<e200[i]&&mom<0))){tr.push((entry-c[i])/entry-.001);pos=0}
- }
- return tr
+
+  const c = d.map(x => x.c);
+
+  const e50 = ema(c,50);
+
+  const e200 = ema(c,200);
+
+  const tr = [];
+
+  let pos = 0;
+
+  let entry = 0;
+
+
+  /* ATR */
+
+  const atr = d.map((x,i) => {
+
+    if(i < 13){
+
+      return NaN;
+    }
+
+    let sum = 0;
+
+    for(
+      let j = i - 13;
+      j <= i;
+      j++
+    ){
+
+      sum += d[j].h - d[j].l;
+    }
+
+    return sum / 14;
+  });
+
+
+  /* 开始回测 */
+
+  for(let i = 200; i < d.length; i++){
+
+    const mom =
+      c[i] / c[i - 20] - 1;
+
+    const a = atr[i];
+
+    if(!Number.isFinite(a)){
+
+      continue;
+    }
+
+
+    /* 没有仓位 */
+
+    if(!pos){
+
+      /* 多头 */
+
+      if(
+        e50[i] > e200[i] &&
+        mom > 0
+      ){
+
+        pos = 1;
+
+        entry = c[i];
+
+      }
+
+      /* 空头 */
+
+      else if(
+        e50[i] < e200[i] &&
+        mom < 0
+      ){
+
+        pos = -1;
+
+        entry = c[i];
+      }
+
+    }
+
+
+    /* 多头 */
+
+    else if(
+      pos === 1 &&
+      (
+        c[i] <= entry - 1.5 * a ||
+        !(e50[i] > e200[i] && mom > 0)
+      )
+    ){
+
+      const ret =
+        (c[i] - entry) / entry - 0.001;
+
+      tr.push(ret);
+
+      pos = 0;
+
+      entry = 0;
+    }
+
+
+    /* 空头 */
+
+    else if(
+      pos === -1 &&
+      (
+        c[i] >= entry + 1.5 * a ||
+        !(e50[i] < e200[i] && mom < 0)
+      )
+    ){
+
+      const ret =
+        (entry - c[i]) / entry - 0.001;
+
+      tr.push(ret);
+
+      pos = 0;
+
+      entry = 0;
+    }
+
+  }
+
+
+  /* 如果最后还有仓位，按最后价格平仓 */
+
+  if(pos !== 0 && entry > 0){
+
+    const last =
+      c[c.length - 1];
+
+    let ret;
+
+    if(pos === 1){
+
+      ret =
+        (last - entry) / entry - 0.001;
+
+    }else{
+
+      ret =
+        (entry - last) / entry - 0.001;
+    }
+
+    tr.push(ret);
+  }
+
+
+  return tr;
 }
+
+
+/* =========================
+   创建结果行
+========================= */
+
+function addResult(symbol, trades, error){
+
+  const box =
+    document.getElementById("results");
+
+  const row =
+    document.createElement("div");
+
+  row.className =
+    "result-row";
+
+
+  if(error){
+
+    row.innerHTML =
+      "<span>" +
+      symbol +
+      "</span>" +
+      "<span class='fail'>" +
+      "失败：" +
+      escapeHtml(error) +
+      "</span>";
+
+  }else{
+
+    row.innerHTML =
+      "<span>" +
+      symbol +
+      "</span>" +
+      "<span class='ok'>" +
+      trades +
+      " 笔" +
+      "</span>";
+  }
+
+
+  box.appendChild(row);
+}
+
+
+/* =========================
+   防止错误信息注入 HTML
+========================= */
+
+function escapeHtml(text){
+
+  return String(text)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#039;");
+}
+
+
+/* =========================
+   开始回测
+========================= */
+
 async function run(){
- const b=document.getElementById("go");b.disabled=true;let all=[],done=0,detail=[];
- for(const s of symbols){document.getElementById("status").textContent="正在读取 "+s+" …";try{let t=calc(await get(s));all.push(...t);detail.push(s+": "+t.length+" 笔");done++}catch(e){detail.push(s+": 获取失败")}}
- let equity=all.reduce((v,x)=>v*(1+x),1),wins=all.filter(x=>x>0).length;
- document.getElementById("trades").textContent=all.length;document.getElementById("win").textContent=all.length?(wins/all.length*100).toFixed(1)+"%":"—";
- document.getElementById("ret").textContent=((equity-1)*100).toFixed(2)+"%";document.getElementById("coins").textContent=done;
- document.getElementById("status").textContent="完成 · "+new Date().toLocaleString();
- b.disabled=false;
+
+  const b =
+    document.getElementById("go");
+
+  const status =
+    document.getElementById("status");
+
+  const results =
+    document.getElementById("results");
+
+  const progressBar =
+    document.getElementById("progressBar");
+
+
+  /* 禁用按钮 */
+
+  b.disabled = true;
+
+  b.textContent = "回测进行中…";
+
+
+  /* 清空 */
+
+  results.innerHTML = "";
+
+  document.getElementById("trades").textContent = "—";
+
+  document.getElementById("win").textContent = "—";
+
+  document.getElementById("ret").textContent = "—";
+
+  document.getElementById("coins").textContent = "0";
+
+  progressBar.style.width = "0%";
+
+
+  let all = [];
+
+  let done = 0;
+
+  let success = 0;
+
+
+  /* =========================
+     逐个币种读取
+  ========================= */
+
+  for(const s of symbols){
+
+    status.textContent =
+      "正在读取 " +
+      s +
+      " …";
+
+
+    try{
+
+      const data =
+        await get(s);
+
+
+      const trades =
+        calc(data);
+
+
+      all.push(...trades);
+
+
+      addResult(
+        s,
+        trades.length,
+        null
+      );
+
+
+      success++;
+
+
+    }catch(e){
+
+      console.error(
+        s,
+        e
+      );
+
+
+      addResult(
+        s,
+        0,
+        e.message || "未知错误"
+      );
+    }
+
+
+    done++;
+
+
+    progressBar.style.width =
+      ((done / symbols.length) * 100)
+      + "%";
+  }
+
+
+  /* =========================
+     计算最终结果
+  ========================= */
+
+  const equity =
+    all.reduce(
+      (v,x) => v * (1 + x),
+      1
+    );
+
+
+  const wins =
+    all.filter(
+      x => x > 0
+    ).length;
+
+
+  const totalTrades =
+    all.length;
+
+
+  const winRate =
+    totalTrades
+      ? wins / totalTrades * 100
+      : 0;
+
+
+  const totalReturn =
+    (equity - 1) * 100;
+
+
+  /* =========================
+     显示结果
+  ========================= */
+
+  document.getElementById(
+    "trades"
+  ).textContent =
+    totalTrades;
+
+
+  document.getElementById(
+    "win"
+  ).textContent =
+    totalTrades
+      ? winRate.toFixed(1) + "%"
+      : "—";
+
+
+  document.getElementById(
+    "ret"
+  ).textContent =
+    totalReturn.toFixed(2) + "%";
+
+
+  document.getElementById(
+    "coins"
+  ).textContent =
+    success;
+
+
+  status.textContent =
+    "回测完成 · 成功读取 " +
+    success +
+    "/" +
+    symbols.length +
+    " 个币种";
+
+
+  b.disabled = false;
+
+  b.textContent =
+    "重新开始回测";
 }
-</script></body></html>
+
+
+/* =========================
+   完成
+========================= */
+
+</script>
+
+</body>
+</html>
