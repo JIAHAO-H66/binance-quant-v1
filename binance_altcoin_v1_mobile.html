@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>山寨币合约 V1 回测器</title>
+<style>
+body{margin:0;background:#f5f6f8;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;color:#111}
+.wrap{max-width:720px;margin:auto;padding:18px}.card{background:#fff;border-radius:18px;padding:18px;margin:12px 0;box-shadow:0 3px 16px #0000000d}
+h1{font-size:25px;margin:4px 0 8px}.muted{color:#70757d;font-size:14px}
+button{width:100%;border:0;border-radius:13px;padding:15px;font-size:17px;background:#111;color:#fff}
+button:disabled{opacity:.5}.metric{display:grid;grid-template-columns:1fr 1fr;gap:10px}.m{background:#f1f2f4;border-radius:13px;padding:12px}.v{font-size:21px;font-weight:700;margin-top:5px}
+pre{white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.5}
+</style></head>
+<body><div class="wrap">
+<div class="card"><h1>Quant V1 · 山寨币合约回测</h1>
+<div class="muted">Binance USDT 永续 · 4H · 多空 · 公开行情数据 · 不下单</div><br>
+<button id="go" onclick="run()">开始回测</button></div>
+<div class="card"><div id="status" class="muted">等待开始</div><div class="metric">
+<div class="m">交易次数<div class="v" id="trades">—</div></div>
+<div class="m">胜率<div class="v" id="win">—</div></div>
+<div class="m">组合收益<div class="v" id="ret">—</div></div>
+<div class="m">币种<div class="v" id="coins">—</div></div></div></div>
+<div class="card"><h3>策略</h3><pre>EMA50 / EMA200 趋势
+20 根 4H 动量
+ATR 1.5 倍止损
+多空双向
+基础手续费模拟 0.1%
+仅用于研究，不代表未来收益</pre></div>
+</div>
+<script>
+const symbols=["SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","SUIUSDT","APTUSDT","NEARUSDT","INJUSDT"];
+function ema(a,n){let k=2/(n+1),e=a[0],o=[e];for(let i=1;i<a.length;i++){e=a[i]*k+e*(1-k);o.push(e)}return o}
+async function get(s){let u="https://fapi.binance.com/fapi/v1/klines?symbol="+s+"&interval=4h&limit=1000";let r=await fetch(u);if(!r.ok)throw Error(s+" "+r.status);let x=await r.json();return x.map(z=>({h:+z[2],l:+z[3],c:+z[4]}))}
+function calc(d){
+ let c=d.map(x=>x.c),e50=ema(c,50),e200=ema(c,200),tr=[],pos=0,entry=0;
+ let atr=d.map((x,i)=>i<13?NaN:d.slice(i-13,i+1).reduce((a,y)=>a+y.h-y.l,0)/14);
+ for(let i=200;i<d.length;i++){let mom=c[i]/c[i-20]-1,a=atr[i];if(!isFinite(a))continue;
+  if(!pos){if(e50[i]>e200[i]&&mom>0){pos=1;entry=c[i]}else if(e50[i]<e200[i]&&mom<0){pos=-1;entry=c[i]}}
+  else if(pos===1&&(c[i]<=entry-1.5*a||!(e50[i]>e200[i]&&mom>0))){tr.push((c[i]-entry)/entry-.001);pos=0}
+  else if(pos===-1&&(c[i]>=entry+1.5*a||!(e50[i]<e200[i]&&mom<0))){tr.push((entry-c[i])/entry-.001);pos=0}
+ }
+ return tr
+}
+async function run(){
+ const b=document.getElementById("go");b.disabled=true;let all=[],done=0,detail=[];
+ for(const s of symbols){document.getElementById("status").textContent="正在读取 "+s+" …";try{let t=calc(await get(s));all.push(...t);detail.push(s+": "+t.length+" 笔");done++}catch(e){detail.push(s+": 获取失败")}}
+ let equity=all.reduce((v,x)=>v*(1+x),1),wins=all.filter(x=>x>0).length;
+ document.getElementById("trades").textContent=all.length;document.getElementById("win").textContent=all.length?(wins/all.length*100).toFixed(1)+"%":"—";
+ document.getElementById("ret").textContent=((equity-1)*100).toFixed(2)+"%";document.getElementById("coins").textContent=done;
+ document.getElementById("status").textContent="完成 · "+new Date().toLocaleString();
+ b.disabled=false;
+}
+</script></body></html>
