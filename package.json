@@ -1,8 +1,13 @@
 {
+  "name": "binance-quant-v1-web2",
+  "version": "1.0.0",
+  "description": "Quant V1 backtest web service",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "adm-zip": "^0.5.16"
   }
 }
