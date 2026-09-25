@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>山寨币合约 V1 回测器</title>
+<title>Quant V1 · 山寨币合约回测</title>
 
 <style>
 *{
@@ -39,7 +39,7 @@ h1{
 }
 
 h2{
-  margin:0 0 14px;
+  margin:4px 0 14px;
 }
 
 h3{
@@ -64,66 +64,65 @@ button{
 
 button:disabled{
   opacity:.5;
-  cursor:not-allowed;
 }
 
 .metric{
   display:grid;
   grid-template-columns:1fr 1fr;
   gap:10px;
+  margin-top:14px;
 }
 
 .m{
   background:#f1f2f4;
   border-radius:13px;
-  padding:12px;
+  padding:14px;
 }
 
 .v{
-  font-size:21px;
+  font-size:22px;
   font-weight:700;
   margin-top:5px;
 }
 
 .progress{
-  width:100%;
   height:8px;
   background:#e5e7eb;
   border-radius:20px;
   overflow:hidden;
-  margin-top:12px;
+  margin-top:14px;
 }
 
 .progress-bar{
-  width:0%;
   height:100%;
+  width:0%;
   background:#111;
-  transition:width .3s;
+  transition:width .25s;
 }
 
-.result{
-  border-top:1px solid #eee;
-  padding:12px 0;
+.coin{
   display:flex;
   justify-content:space-between;
   gap:10px;
+  padding:13px 0;
+  border-bottom:1px solid #eee;
   font-size:15px;
 }
 
-.result:first-child{
-  border-top:0;
+.coin:last-child{
+  border-bottom:0;
 }
 
 .ok{
-  color:#16803c;
+  color:#198754;
 }
 
 .fail{
-  color:#d92d20;
+  color:#d93025;
 }
 
-.loading{
-  color:#666;
+.running{
+  color:#555;
 }
 
 pre{
@@ -132,6 +131,21 @@ pre{
   font-size:13px;
   line-height:1.5;
   margin:0;
+}
+
+.small{
+  font-size:13px;
+  color:#70757d;
+}
+
+@media(max-width:500px){
+  .wrap{
+    padding:12px;
+  }
+
+  .card{
+    padding:16px;
+  }
 }
 </style>
 </head>
@@ -156,7 +170,7 @@ pre{
     </button>
 
     <div class="progress">
-      <div class="progress-bar" id="progress"></div>
+      <div id="progressBar" class="progress-bar"></div>
     </div>
 
   </div>
@@ -168,8 +182,6 @@ pre{
     <div id="status" class="muted">
       等待开始
     </div>
-
-    <br>
 
     <div class="metric">
 
@@ -198,13 +210,13 @@ pre{
   </div>
 
 
-  <!-- 每个币种结果 -->
+  <!-- 币种结果 -->
   <div class="card">
 
     <h2>币种回测结果</h2>
 
     <div id="results">
-      <div class="muted">
+      <div class="small">
         点击“开始回测”后显示结果
       </div>
     </div>
@@ -215,7 +227,7 @@ pre{
   <!-- 策略 -->
   <div class="card">
 
-    <h3>策略</h3>
+    <h2>策略</h2>
 
     <pre>EMA50 / EMA200 趋势
 20 根 4H 动量
@@ -232,10 +244,9 @@ ATR 1.5 倍止损
 
 <script>
 
-/* =========================================================
-   回测币种
-========================================================= */
-
+/*
+ * 回测币种
+ */
 const symbols = [
   "SOLUSDT",
   "XRPUSDT",
@@ -250,13 +261,12 @@ const symbols = [
 ];
 
 
-/* =========================================================
-   EMA
-========================================================= */
+/*
+ * EMA
+ */
+function ema(a, n){
 
-function ema(a,n){
-
-  if(!a || !a.length){
+  if(!a.length){
     return [];
   }
 
@@ -264,171 +274,103 @@ function ema(a,n){
 
   let e = a[0];
 
-  const o = [e];
+  const out = [e];
 
   for(let i = 1; i < a.length; i++){
 
     e = a[i] * k + e * (1 - k);
 
-    o.push(e);
+    out.push(e);
   }
 
-  return o;
+  return out;
 }
 
 
-/* =========================================================
-   从自己的服务器读取 Binance K线
-   注意：
-   这里已经不是直接访问 Binance。
-   而是访问：
-   
-   https://你的域名/api/klines
-========================================================= */
+/*
+ * ATR
+ *
+ * 使用 True Range。
+ */
+function atr(data, n = 14){
 
-async function get(s){
+  const out = new Array(data.length).fill(NaN);
 
-  const u =
-    "/api/klines" +
-    "?symbol=" +
-    encodeURIComponent(s) +
-    "&interval=4h" +
-    "&limit=1000";
+  for(let i = 1; i < data.length; i++){
 
-  const r = await fetch(u, {
-    method: "GET",
-    cache: "no-store"
-  });
+    const prevClose = data[i - 1].close;
 
-  if(!r.ok){
-
-    throw new Error(
-      s + " HTTP " + r.status
+    const tr = Math.max(
+      data[i].high - data[i].low,
+      Math.abs(data[i].high - prevClose),
+      Math.abs(data[i].low - prevClose)
     );
+
+    data[i]._tr = tr;
   }
 
-  const x = await r.json();
-
-  if(!Array.isArray(x)){
-
-    throw new Error(
-      s + " 数据格式错误"
-    );
-  }
-
-  if(x.length < 250){
-
-    throw new Error(
-      s + " K线数量不足：" + x.length
-    );
-  }
-
-  return x.map(z => ({
-
-    h: Number(z[2]),
-
-    l: Number(z[3]),
-
-    c: Number(z[4])
-
-  }));
-
-}
-
-
-/* =========================================================
-   单个币种回测
-========================================================= */
-
-function calc(d){
-
-  if(!d || d.length < 250){
-
-    return [];
-  }
-
-
-  /* 收盘价 */
-
-  const c = d.map(x => x.c);
-
-
-  /* EMA */
-
-  const e50 = ema(c,50);
-
-  const e200 = ema(c,200);
-
-
-  /* ATR */
-
-  const atr = d.map((x,i) => {
-
-    if(i < 13){
-
-      return NaN;
-    }
+  for(let i = n; i < data.length; i++){
 
     let sum = 0;
 
-    for(
-      let j = i - 13;
-      j <= i;
-      j++
-    ){
-
-      sum += d[j].h - d[j].l;
-
+    for(let j = i - n + 1; j <= i; j++){
+      sum += data[j]._tr || 0;
     }
 
-    return sum / 14;
+    out[i] = sum / n;
+  }
 
-  });
-
-
-  /* 交易记录 */
-
-  const tr = [];
+  return out;
+}
 
 
-  /* 当前仓位
-     0 = 空仓
-     1 = 多
-    -1 = 空
-  */
+/*
+ * 单币种回测
+ */
+function calc(data){
+
+  if(!data || data.length < 220){
+    return [];
+  }
+
+  const c = data.map(x => x.close);
+
+  const e50 = ema(c, 50);
+
+  const e200 = ema(c, 200);
+
+  const a = atr(data, 14);
+
+  const trades = [];
 
   let pos = 0;
 
-
-  /* 入场价格 */
-
   let entry = 0;
 
+  /*
+   * 从 200 根以后开始，
+   * 保证 EMA200 有足够数据。
+   */
+  for(let i = 200; i < data.length; i++){
 
-  /* 开始回测 */
-
-  for(let i = 200; i < d.length; i++){
-
-    const mom =
-      c[i] / c[i - 20] - 1;
-
-    const a = atr[i];
-
-
-    if(!isFinite(a)){
-
+    if(!Number.isFinite(a[i])){
       continue;
     }
 
+    /*
+     * 20 根 4H 动量
+     */
+    const mom =
+      c[i] / c[i - 20] - 1;
 
-    /* =========================
-       空仓 → 寻找开仓
-    ========================= */
+    /*
+     * 没有持仓
+     */
+    if(pos === 0){
 
-    if(!pos){
-
-      /* 多头 */
-
+      /*
+       * 做多
+       */
       if(
         e50[i] > e200[i] &&
         mom > 0
@@ -438,11 +380,13 @@ function calc(d){
 
         entry = c[i];
 
+        continue;
       }
 
-      /* 空头 */
-
-      else if(
+      /*
+       * 做空
+       */
+      if(
         e50[i] < e200[i] &&
         mom < 0
       ){
@@ -451,397 +395,374 @@ function calc(d){
 
         entry = c[i];
 
+        continue;
       }
-
     }
 
 
-    /* =========================
-       多头管理
-    ========================= */
-
-    else if(pos === 1){
+    /*
+     * 多单
+     */
+    if(pos === 1){
 
       const stop =
-        entry - 1.5 * a;
+        entry - 1.5 * a[i];
 
-      const trendFail =
+      const trendBroken =
         !(e50[i] > e200[i] && mom > 0);
 
+      const stopHit =
+        c[i] <= stop;
 
-      if(
-        c[i] <= stop ||
-        trendFail
-      ){
+      if(stopHit || trendBroken){
 
-        const ret =
-          (c[i] - entry) / entry - 0.001;
+        const gross =
+          (c[i] - entry) / entry;
 
-        tr.push(ret);
+        const net =
+          gross - 0.001;
+
+        trades.push({
+          side:"LONG",
+          entry:entry,
+          exit:c[i],
+          ret:net
+        });
 
         pos = 0;
 
         entry = 0;
-
       }
-
     }
 
 
-    /* =========================
-       空头管理
-    ========================= */
-
+    /*
+     * 空单
+     */
     else if(pos === -1){
 
       const stop =
-        entry + 1.5 * a;
+        entry + 1.5 * a[i];
 
-      const trendFail =
+      const trendBroken =
         !(e50[i] < e200[i] && mom < 0);
 
+      const stopHit =
+        c[i] >= stop;
 
-      if(
-        c[i] >= stop ||
-        trendFail
-      ){
+      if(stopHit || trendBroken){
 
-        const ret =
-          (entry - c[i]) / entry - 0.001;
+        const gross =
+          (entry - c[i]) / entry;
 
-        tr.push(ret);
+        const net =
+          gross - 0.001;
+
+        trades.push({
+          side:"SHORT",
+          entry:entry,
+          exit:c[i],
+          ret:net
+        });
 
         pos = 0;
 
         entry = 0;
-
       }
-
     }
-
   }
 
+  return trades;
+}
 
-  /* 如果最后还有仓位，
-     用最后一根K线平仓 */
 
-  if(pos !== 0 && entry > 0){
+/*
+ * 从服务器读取 Binance 数据
+ */
+async function get(symbol){
 
-    const last =
-      c[c.length - 1];
+  const url =
+    "/api/klines" +
+    "?symbol=" +
+    encodeURIComponent(symbol) +
+    "&interval=4h" +
+    "&limit=1000";
 
-    let ret;
+  const response =
+    await fetch(url, {
+      method:"GET",
+      cache:"no-store"
+    });
 
-    if(pos === 1){
+  let result;
 
-      ret =
-        (last - entry) / entry - 0.001;
-
-    }else{
-
-      ret =
-        (entry - last) / entry - 0.001;
-
-    }
-
-    tr.push(ret);
-
+  try{
+    result = await response.json();
+  }catch{
+    throw new Error(
+      symbol + "：服务器返回格式错误"
+    );
   }
 
+  if(!response.ok || !result.ok){
 
-  return tr;
+    throw new Error(
+      result.error ||
+      symbol + " HTTP " + response.status
+    );
+  }
 
+  if(
+    !Array.isArray(result.data) ||
+    result.data.length === 0
+  ){
+
+    throw new Error(
+      symbol + "：没有行情数据"
+    );
+  }
+
+  return result.data;
 }
 
 
-/* =========================================================
-   格式化收益
-========================================================= */
-
-function formatPercent(x){
-
-  return (
-    (x * 100).toFixed(2) +
-    "%"
-  );
-
-}
-
-
-/* =========================================================
-   清空结果
-========================================================= */
-
-function resetUI(){
-
-  document.getElementById("trades")
-    .textContent = "—";
-
-  document.getElementById("win")
-    .textContent = "—";
-
-  document.getElementById("ret")
-    .textContent = "—";
-
-  document.getElementById("coins")
-    .textContent = "—";
-
-  document.getElementById("results")
-    .innerHTML = "";
-
-  document.getElementById("progress")
-    .style.width = "0%";
-
-}
-
-
-/* =========================================================
-   显示币种结果
-========================================================= */
-
-function addResult(
-  symbol,
-  trades,
-  error
-){
+/*
+ * 显示币种状态
+ */
+function addResult(symbol, text, cls){
 
   const box =
     document.getElementById("results");
 
-
   const row =
     document.createElement("div");
 
-  row.className = "result";
-
+  row.className = "coin";
 
   const name =
     document.createElement("div");
 
   name.textContent = symbol;
 
-
-  const info =
+  const status =
     document.createElement("div");
 
+  status.className = cls || "";
 
-  if(error){
-
-    info.className = "fail";
-
-    info.textContent =
-      "失败： " + error;
-
-  }else{
-
-    info.className = "ok";
-
-    if(trades.length){
-
-      const wins =
-        trades.filter(x => x > 0).length;
-
-      const equity =
-        trades.reduce(
-          (v,x) => v * (1 + x),
-          1
-        );
-
-      info.textContent =
-        trades.length +
-        " 笔 · 胜率 " +
-        (wins / trades.length * 100)
-          .toFixed(1) +
-        "% · 收益 " +
-        ((equity - 1) * 100)
-          .toFixed(2) +
-        "%";
-
-    }else{
-
-      info.textContent =
-        "0 笔";
-
-    }
-
-  }
-
+  status.textContent = text;
 
   row.appendChild(name);
 
-  row.appendChild(info);
+  row.appendChild(status);
 
   box.appendChild(row);
-
 }
 
 
-/* =========================================================
-   主回测
-========================================================= */
-
+/*
+ * 主回测
+ */
 async function run(){
 
   const button =
     document.getElementById("go");
 
-
-  /* 防止重复点击 */
-
-  button.disabled = true;
-
-  button.textContent =
-    "正在回测…";
-
-
-  resetUI();
-
+  const status =
+    document.getElementById("status");
 
   const results =
     document.getElementById("results");
 
-  results.innerHTML =
-    '<div class="muted">正在连接服务器…</div>';
+  const progress =
+    document.getElementById("progressBar");
 
 
-  let all = [];
+  button.disabled = true;
 
-  let done = 0;
+  button.textContent =
+    "正在回测……";
+
+  results.innerHTML = "";
+
+  progress.style.width = "0%";
+
+
+  /*
+   * 重置统计
+   */
+  document.getElementById("trades").textContent = "—";
+
+  document.getElementById("win").textContent = "—";
+
+  document.getElementById("ret").textContent = "—";
+
+  document.getElementById("coins").textContent =
+    "0/" + symbols.length;
+
+
+  const allTrades = [];
 
   let success = 0;
 
 
-  try{
+  /*
+   * 一个一个币种处理
+   */
+  for(let i = 0; i < symbols.length; i++){
 
-    for(const s of symbols){
+    const symbol = symbols[i];
 
-      document.getElementById("status")
-        .textContent =
-        "正在读取 " +
-        s +
-        " …";
-
-
-      try{
-
-        const data =
-          await get(s);
+    status.textContent =
+      "正在读取 " +
+      symbol +
+      " ……";
 
 
-        const trades =
-          calc(data);
+    /*
+     * 先显示读取中
+     */
+    addResult(
+      symbol,
+      "读取中……",
+      "running"
+    );
+
+    const rows =
+      results.querySelectorAll(".coin");
+
+    const currentRow =
+      rows[rows.length - 1];
+
+    const currentStatus =
+      currentRow.children[1];
 
 
-        all.push(...trades);
+    try{
+
+      /*
+       * 获取行情
+       */
+      const data =
+        await get(symbol);
 
 
-        success++;
+      /*
+       * 回测
+       */
+      const trades =
+        calc(data);
 
 
-        addResult(
-          s,
-          trades,
-          null
-        );
-
-
-      }catch(e){
-
-        addResult(
-          s,
-          [],
-          e.message || "未知错误"
-        );
-
+      /*
+       * 合并
+       */
+      for(const t of trades){
+        allTrades.push(t);
       }
 
 
-      done++;
+      success++;
 
 
-      const percent =
-        done / symbols.length * 100;
+      currentStatus.textContent =
+        "成功 · " +
+        data.length +
+        " 根K线 · " +
+        trades.length +
+        " 笔交易";
+
+      currentStatus.className =
+        "ok";
 
 
-      document.getElementById("progress")
-        .style.width =
-        percent + "%";
+    }catch(err){
 
+      currentStatus.textContent =
+        "失败：" +
+        err.message;
+
+      currentStatus.className =
+        "fail";
     }
 
 
-    /* =========================
-       统计总结果
-    ========================= */
+    /*
+     * 更新进度
+     */
+    const percent =
+      ((i + 1) / symbols.length) * 100;
 
-    const equity =
-      all.reduce(
-        (v,x) => v * (1 + x),
-        1
-      );
-
-
-    const wins =
-      all.filter(
-        x => x > 0
-      ).length;
+    progress.style.width =
+      percent + "%";
 
 
-    document.getElementById("trades")
-      .textContent =
-      all.length;
-
-
-    document.getElementById("win")
-      .textContent =
-      all.length
-        ? (
-            wins /
-            all.length *
-            100
-          ).toFixed(1) + "%"
-        : "—";
-
-
-    document.getElementById("ret")
-      .textContent =
-      (
-        (equity - 1) *
-        100
-      ).toFixed(2) + "%";
-
-
-    document.getElementById("coins")
-      .textContent =
+    document.getElementById("coins").textContent =
       success + "/" + symbols.length;
-
-
-    document.getElementById("status")
-      .textContent =
-      "回测完成 · 成功读取 " +
-      success +
-      "/" +
-      symbols.length +
-      " 个币种";
-
-
-  }catch(e){
-
-    document.getElementById("status")
-      .textContent =
-      "回测出现错误：" +
-      (e.message || e);
-
-
-  }finally{
-
-    button.disabled = false;
-
-    button.textContent =
-      "重新开始回测";
-
   }
 
+
+  /*
+   * 组合收益
+   *
+   * 每笔交易复利计算。
+   */
+  let equity = 1;
+
+  for(const trade of allTrades){
+
+    equity *=
+      1 + trade.ret;
+  }
+
+
+  /*
+   * 胜率
+   */
+  const wins =
+    allTrades.filter(
+      x => x.ret > 0
+    ).length;
+
+
+  const winRate =
+    allTrades.length
+      ? wins / allTrades.length
+      : 0;
+
+
+  /*
+   * 显示结果
+   */
+  document.getElementById("trades").textContent =
+    allTrades.length;
+
+
+  document.getElementById("win").textContent =
+    allTrades.length
+      ? (winRate * 100).toFixed(1) + "%"
+      : "—";
+
+
+  document.getElementById("ret").textContent =
+    ((equity - 1) * 100).toFixed(2) + "%";
+
+
+  document.getElementById("coins").textContent =
+    success + "/" + symbols.length;
+
+
+  status.textContent =
+    "回测完成 · 成功读取 " +
+    success +
+    "/" +
+    symbols.length +
+    " 个币种";
+
+
+  button.disabled = false;
+
+  button.textContent =
+    "重新开始回测";
 }
 
 </script>
