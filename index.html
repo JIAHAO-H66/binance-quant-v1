@@ -5,8 +5,10 @@
 
 <meta charset="utf-8">
 
-<meta name="viewport"
-      content="width=device-width,initial-scale=1">
+<meta
+  name="viewport"
+  content="width=device-width,initial-scale=1"
+>
 
 <title>Quant V2 · 山寨币合约回测</title>
 
@@ -19,8 +21,13 @@
 body{
   margin:0;
   background:#f5f6f8;
-  font-family:-apple-system,BlinkMacSystemFont,
-    "SF Pro Text","Helvetica Neue",Arial,sans-serif;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
   color:#111;
 }
 
@@ -50,6 +57,7 @@ h2{
 .muted{
   color:#70757d;
   font-size:14px;
+  line-height:1.6;
 }
 
 button{
@@ -104,7 +112,6 @@ button:disabled{
 .coin{
   display:flex;
   justify-content:space-between;
-  align-items:flex-start;
   gap:12px;
   padding:13px 0;
   border-bottom:1px solid #eee;
@@ -113,15 +120,6 @@ button:disabled{
 
 .coin:last-child{
   border-bottom:0;
-}
-
-.coin-name{
-  min-width:95px;
-}
-
-.coin-result{
-  text-align:right;
-  line-height:1.5;
 }
 
 .ok{
@@ -136,12 +134,16 @@ button:disabled{
   color:#555;
 }
 
-.positive{
+.good{
   color:#198754;
 }
 
-.negative{
+.bad{
   color:#d93025;
+}
+
+.neutral{
+  color:#555;
 }
 
 pre{
@@ -155,6 +157,17 @@ pre{
 .small{
   font-size:13px;
   color:#70757d;
+  line-height:1.6;
+}
+
+.note{
+  background:#f7f7f8;
+  border-radius:12px;
+  padding:13px;
+  margin-top:12px;
+  font-size:13px;
+  line-height:1.6;
+  color:#666;
 }
 
 @media(max-width:500px){
@@ -188,34 +201,37 @@ pre{
 
 <div class="card">
 
-<h1>
-Quant V2 · 山寨币合约回测
-</h1>
+  <h1>
+    Quant V2 · 山寨币合约回测
+  </h1>
 
-<div class="muted">
+  <div class="muted">
 
-Binance USDT 永续 · 4H · 多空 ·
-公开行情数据 · 不下单 · 1倍仓位
+    Binance USDT 永续 · 4H · 多空<br>
 
-</div>
+    3000 根K线 · 手续费 · 滑点 · 最大回撤<br>
 
-<br>
+    公开行情数据 · 不下单
 
-<button
-  id="go"
-  onclick="run()"
->
-开始回测
-</button>
+  </div>
 
-<div class="progress">
+  <br>
 
-<div
-  id="progressBar"
-  class="progress-bar"
-></div>
+  <button
+    id="go"
+    onclick="run()"
+  >
+    开始回测
+  </button>
 
-</div>
+  <div class="progress">
+
+    <div
+      id="progressBar"
+      class="progress-bar"
+    ></div>
+
+  </div>
 
 </div>
 
@@ -224,130 +240,203 @@ Binance USDT 永续 · 4H · 多空 ·
 
 <div class="card">
 
-<div
-  id="status"
-  class="muted"
->
-等待开始
+  <div
+    id="status"
+    class="muted"
+  >
+    等待开始
+  </div>
+
+
+  <div class="metric">
+
+
+    <div class="m">
+
+      初始资金
+
+      <div
+        class="v"
+        id="initial"
+      >
+        10,000
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      最终资金
+
+      <div
+        class="v"
+        id="final"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      总收益
+
+      <div
+        class="v"
+        id="ret"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      最大回撤
+
+      <div
+        class="v"
+        id="drawdown"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      交易次数
+
+      <div
+        class="v"
+        id="trades"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      胜率
+
+      <div
+        class="v"
+        id="win"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      Profit Factor
+
+      <div
+        class="v"
+        id="pf"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      币种
+
+      <div
+        class="v"
+        id="coins"
+      >
+        0/10
+      </div>
+
+    </div>
+
+
+  </div>
+
 </div>
 
 
-<div class="metric">
+<!-- 多空统计 -->
+
+<div class="card">
+
+  <h2>
+    多空统计
+  </h2>
 
 
-<div class="m">
-
-初始资金
-
-<div
-  class="v"
-  id="initial"
->
-10,000
-</div>
-
-</div>
+  <div class="metric">
 
 
-<div class="m">
+    <div class="m">
 
-最终资金
+      多单次数
 
-<div
-  class="v"
-  id="final"
->
-—
-</div>
+      <div
+        class="v"
+        id="longTrades"
+      >
+        —
+      </div>
 
-</div>
-
-
-<div class="m">
-
-总收益
-
-<div
-  class="v"
-  id="ret"
->
-—
-</div>
-
-</div>
+    </div>
 
 
-<div class="m">
+    <div class="m">
 
-最大回撤
+      多单胜率
 
-<div
-  class="v"
-  id="drawdown"
->
-—
-</div>
+      <div
+        class="v"
+        id="longWin"
+      >
+        —
+      </div>
 
-</div>
-
-
-<div class="m">
-
-交易次数
-
-<div
-  class="v"
-  id="trades"
->
-—
-</div>
-
-</div>
+    </div>
 
 
-<div class="m">
+    <div class="m">
 
-胜率
+      空单次数
 
-<div
-  class="v"
-  id="win"
->
-—
-</div>
+      <div
+        class="v"
+        id="shortTrades"
+      >
+        —
+      </div>
 
-</div>
-
-
-<div class="m">
-
-Profit Factor
-
-<div
-  class="v"
-  id="pf"
->
-—
-</div>
-
-</div>
+    </div>
 
 
-<div class="m">
+    <div class="m">
 
-币种
+      空单胜率
 
-<div
-  class="v"
-  id="coins"
->
-—
-</div>
+      <div
+        class="v"
+        id="shortWin"
+      >
+        —
+      </div>
 
-</div>
+    </div>
 
 
-</div>
+  </div>
 
 </div>
 
@@ -356,17 +445,19 @@ Profit Factor
 
 <div class="card">
 
-<h2>
-币种回测结果
-</h2>
+  <h2>
+    币种回测结果
+  </h2>
 
-<div id="results">
+  <div id="results">
 
-<div class="small">
-点击“开始回测”后显示结果
-</div>
+    <div class="small">
 
-</div>
+      点击“开始回测”后显示结果
+
+    </div>
+
+  </div>
 
 </div>
 
@@ -375,31 +466,37 @@ Profit Factor
 
 <div class="card">
 
-<h2>
-策略
-</h2>
+  <h2>
+    当前策略
+  </h2>
 
-<pre>
+  <pre>
 EMA50 / EMA200 趋势
 
 20 根 4H 动量
 
-ATR(14) × 1.5 固定止损
+ATR(14) × 1.5 止损
 
 多空双向
 
-开仓手续费 0.1%
+手续费：单边 0.05%
 
-平仓手续费 0.1%
+滑点：单边 0.02%
 
-1倍仓位
+初始资金：10,000 USDT
 
-10个币种平均分配资金
+每笔交易按当前权益复利
 
-仅使用公开行情数据
+仅用于历史研究，不代表未来收益
+  </pre>
 
-仅用于研究，不代表未来收益
-</pre>
+
+  <div class="note">
+
+    注意：3000 根 4H K线大约覆盖 500 天左右。
+    本页面的结果属于历史回测结果，不代表未来实际交易表现。
+
+  </div>
 
 </div>
 
@@ -411,11 +508,8 @@ ATR(14) × 1.5 固定止损
 
 
 /*
- * ============================
- * 基础参数
- * ============================
+ * 回测币种
  */
-
 
 const symbols = [
 
@@ -433,34 +527,25 @@ const symbols = [
 ];
 
 
+/*
+ * 参数
+ */
+
 const INITIAL_CAPITAL = 10000;
 
 
 /*
- * 10个币种平均分配资金
- *
- * 10000 / 10 = 1000
+ * 单边手续费 0.05%
  */
 
-const CAPITAL_PER_COIN =
-  INITIAL_CAPITAL / symbols.length;
+const FEE = 0.0005;
 
 
 /*
- * 手续费
- *
- * 开仓 0.1%
- * 平仓 0.1%
+ * 单边滑点 0.02%
  */
 
-const FEE_RATE = 0.001;
-
-
-/*
- * ATR 止损倍数
- */
-
-const ATR_MULTIPLIER = 1.5;
+const SLIPPAGE = 0.0002;
 
 
 /*
@@ -476,43 +561,60 @@ function ema(a,n){
   const k =
     2 / (n + 1);
 
-  let e = a[0];
+  let e =
+    a[0];
 
-  const out = [e];
+  const out =
+    [e];
 
-  for(let i = 1; i < a.length; i++){
+  for(
+    let i = 1;
+    i < a.length;
+    i++
+  ){
 
     e =
       a[i] * k +
       e * (1-k);
 
     out.push(e);
+
   }
 
   return out;
+
 }
 
 
 /*
  * ATR
- *
- * Wilder 风格之前我们简单平均，
- * 这里继续使用简单 TR 平均，
- * 保证结果容易理解。
  */
 
 function atr(data,n=14){
 
   const out =
-    new Array(data.length)
-    .fill(NaN);
+    new Array(
+      data.length
+    ).fill(NaN);
 
-  for(let i=1;i<data.length;i++){
 
-    const prevClose =
+  const tr =
+    new Array(
+      data.length
+    ).fill(NaN);
+
+
+  for(
+    let i=1;
+    i<data.length;
+    i++
+  ){
+
+    const prev =
       data[i-1].close;
 
-    const tr =
+
+    tr[i] =
       Math.max(
 
         data[i].high -
@@ -520,17 +622,16 @@ function atr(data,n=14){
 
         Math.abs(
           data[i].high -
-          prevClose
+          prev
         ),
 
         Math.abs(
           data[i].low -
-          prevClose
+          prev
         )
 
       );
 
-    data[i]._tr = tr;
   }
 
 
@@ -549,27 +650,25 @@ function atr(data,n=14){
     ){
 
       sum +=
-        data[j]._tr || 0;
+        tr[j] || 0;
 
     }
 
     out[i] =
       sum / n;
+
   }
 
   return out;
+
 }
 
 
 /*
  * 单币种回测
- *
- * 每个币种独立使用1000 USDT。
- *
- * 最后再把10个币种的结果加起来。
  */
 
-function calc(data,symbol){
+function calc(data){
 
   if(
     !data ||
@@ -577,25 +676,29 @@ function calc(data,symbol){
   ){
 
     return {
-      symbol,
+
       trades:[],
-      finalCapital:CAPITAL_PER_COIN,
-      returnPct:0,
-      longTrades:0,
-      shortTrades:0
+
+      finalEquity:1
+
     };
 
   }
 
 
   const c =
-    data.map(x => x.close);
+    data.map(
+      x => x.close
+    );
+
 
   const e50 =
     ema(c,50);
 
+
   const e200 =
     ema(c,200);
+
 
   const a =
     atr(data,14);
@@ -604,25 +707,12 @@ function calc(data,symbol){
   const trades = [];
 
 
-  /*
-   * 0 = 无仓位
-   * 1 = 多
-   * -1 = 空
-   */
-
   let pos = 0;
-
 
   let entry = 0;
 
-  let stop = 0;
+  let equity = 1;
 
-  let entryIndex = -1;
-
-
-  /*
-   * 从第200根K线开始
-   */
 
   for(
     let i=200;
@@ -633,15 +723,9 @@ function calc(data,symbol){
     if(
       !Number.isFinite(a[i])
     ){
-
       continue;
-
     }
 
-
-    /*
-     * 20根K线动量
-     */
 
     const mom =
       c[i] /
@@ -650,16 +734,14 @@ function calc(data,symbol){
 
 
     /*
-     * ==========================
      * 没有持仓
-     * ==========================
      */
 
     if(pos === 0){
 
 
       /*
-       * 多头条件
+       * 多头
        */
 
       if(
@@ -670,32 +752,21 @@ function calc(data,symbol){
 
         pos = 1;
 
-        entry =
-          c[i];
-
-        entryIndex =
-          i;
-
-
         /*
-         * 固定止损
-         *
-         * 注意：
-         * 这里只计算一次。
+         * 买入滑点
          */
 
-        stop =
-          entry -
-          ATR_MULTIPLIER *
-          a[i];
-
+        entry =
+          c[i] *
+          (1 + SLIPPAGE);
 
         continue;
+
       }
 
 
       /*
-       * 空头条件
+       * 空头
        */
 
       if(
@@ -706,44 +777,30 @@ function calc(data,symbol){
 
         pos = -1;
 
-        entry =
-          c[i];
-
-        entryIndex =
-          i;
-
-
         /*
-         * 固定止损
+         * 做空成交价
          */
 
-        stop =
-          entry +
-          ATR_MULTIPLIER *
-          a[i];
-
+        entry =
+          c[i] *
+          (1 - SLIPPAGE);
 
         continue;
+
       }
 
     }
 
 
     /*
-     * ==========================
-     * 多头
-     * ==========================
+     * 多单
      */
 
     if(pos === 1){
 
-      /*
-       * 用K线最低价判断
-       * 是否碰到止损。
-       */
-
-      const stopHit =
-        data[i].low <= stop;
+      const stop =
+        entry -
+        1.5 * a[i];
 
 
       const trendBroken =
@@ -754,14 +811,22 @@ function calc(data,symbol){
         );
 
 
-      /*
-       * 优先按照止损处理。
-       */
+      const stopHit =
+        c[i] <= stop;
 
-      if(stopHit){
+
+      if(
+        stopHit ||
+        trendBroken
+      ){
+
+        /*
+         * 卖出滑点
+         */
 
         const exit =
-          stop;
+          c[i] *
+          (1 - SLIPPAGE);
 
 
         const gross =
@@ -770,20 +835,21 @@ function calc(data,symbol){
 
 
         /*
-         * 开仓手续费
-         * +
-         * 平仓手续费
+         * 进场手续费 +
+         * 出场手续费
          */
 
         const net =
           gross -
-          FEE_RATE -
-          FEE_RATE;
+          FEE -
+          FEE;
+
+
+        equity *=
+          1 + net;
 
 
         trades.push({
-
-          symbol,
 
           side:"LONG",
 
@@ -791,79 +857,14 @@ function calc(data,symbol){
 
           exit,
 
-          ret:net,
-
-          entryIndex,
-
-          exitIndex:i,
-
-          reason:"ATR STOP"
+          ret:net
 
         });
 
 
-        pos=0;
+        pos = 0;
 
-        entry=0;
-
-        stop=0;
-
-        entryIndex=-1;
-
-
-        continue;
-      }
-
-
-      /*
-       * 趋势反转
-       */
-
-      if(trendBroken){
-
-        const exit =
-          c[i];
-
-
-        const gross =
-          (exit-entry) /
-          entry;
-
-
-        const net =
-          gross -
-          FEE_RATE -
-          FEE_RATE;
-
-
-        trades.push({
-
-          symbol,
-
-          side:"LONG",
-
-          entry,
-
-          exit,
-
-          ret:net,
-
-          entryIndex,
-
-          exitIndex:i,
-
-          reason:"TREND"
-
-        });
-
-
-        pos=0;
-
-        entry=0;
-
-        stop=0;
-
-        entryIndex=-1;
+        entry = 0;
 
       }
 
@@ -871,20 +872,14 @@ function calc(data,symbol){
 
 
     /*
-     * ==========================
-     * 空头
-     * ==========================
+     * 空单
      */
 
     else if(pos === -1){
 
-      /*
-       * 空头止损：
-       * K线最高价碰到止损。
-       */
-
-      const stopHit =
-        data[i].high >= stop;
+      const stop =
+        entry +
+        1.5 * a[i];
 
 
       const trendBroken =
@@ -895,14 +890,22 @@ function calc(data,symbol){
         );
 
 
-      /*
-       * 止损优先
-       */
+      const stopHit =
+        c[i] >= stop;
 
-      if(stopHit){
+
+      if(
+        stopHit ||
+        trendBroken
+      ){
+
+        /*
+         * 空单回补滑点
+         */
 
         const exit =
-          stop;
+          c[i] *
+          (1 + SLIPPAGE);
 
 
         const gross =
@@ -912,13 +915,15 @@ function calc(data,symbol){
 
         const net =
           gross -
-          FEE_RATE -
-          FEE_RATE;
+          FEE -
+          FEE;
+
+
+        equity *=
+          1 + net;
 
 
         trades.push({
-
-          symbol,
 
           side:"SHORT",
 
@@ -926,197 +931,28 @@ function calc(data,symbol){
 
           exit,
 
-          ret:net,
-
-          entryIndex,
-
-          exitIndex:i,
-
-          reason:"ATR STOP"
+          ret:net
 
         });
 
 
-        pos=0;
+        pos = 0;
 
-        entry=0;
-
-        stop=0;
-
-        entryIndex=-1;
-
-
-        continue;
-      }
-
-
-      /*
-       * 趋势反转
-       */
-
-      if(trendBroken){
-
-        const exit =
-          c[i];
-
-
-        const gross =
-          (entry-exit) /
-          entry;
-
-
-        const net =
-          gross -
-          FEE_RATE -
-          FEE_RATE;
-
-
-        trades.push({
-
-          symbol,
-
-          side:"SHORT",
-
-          entry,
-
-          exit,
-
-          ret:net,
-
-          entryIndex,
-
-          exitIndex:i,
-
-          reason:"TREND"
-
-        });
-
-
-        pos=0;
-
-        entry=0;
-
-        stop=0;
-
-        entryIndex=-1;
+        entry = 0;
 
       }
 
     }
 
   }
-
-
-  /*
-   * ==========================
-   * 最后一笔未平仓交易
-   * ==========================
-   */
-
-  if(pos !== 0){
-
-    const i =
-      data.length-1;
-
-    const exit =
-      c[i];
-
-
-    let gross;
-
-
-    if(pos === 1){
-
-      gross =
-        (exit-entry) /
-        entry;
-
-    }else{
-
-      gross =
-        (entry-exit) /
-        entry;
-
-    }
-
-
-    const net =
-      gross -
-      FEE_RATE -
-      FEE_RATE;
-
-
-    trades.push({
-
-      symbol,
-
-      side:
-        pos === 1
-          ? "LONG"
-          : "SHORT",
-
-      entry,
-
-      exit,
-
-      ret:net,
-
-      entryIndex,
-
-      exitIndex:i,
-
-      reason:"END"
-
-    });
-
-  }
-
-
-  /*
-   * ==========================
-   * 计算该币种资金
-   * ==========================
-   */
-
-  let capital =
-    CAPITAL_PER_COIN;
-
-
-  for(const trade of trades){
-
-    capital *=
-      1 + trade.ret;
-
-  }
-
-
-  const returnPct =
-    (
-      capital /
-      CAPITAL_PER_COIN -
-      1
-    ) * 100;
 
 
   return {
 
-    symbol,
-
     trades,
 
-    finalCapital:capital,
-
-    returnPct,
-
-    longTrades:
-      trades.filter(
-        x => x.side === "LONG"
-      ).length,
-
-    shortTrades:
-      trades.filter(
-        x => x.side === "SHORT"
-      ).length
+    finalEquity:
+      equity
 
   };
 
@@ -1124,9 +960,7 @@ function calc(data,symbol){
 
 
 /*
- * ============================
- * 从服务器获取行情
- * ============================
+ * 获取历史数据
  */
 
 async function get(symbol){
@@ -1136,7 +970,7 @@ async function get(symbol){
     "?symbol=" +
     encodeURIComponent(symbol) +
     "&interval=4h" +
-    "&limit=1000";
+    "&limit=3000";
 
 
   const response =
@@ -1173,12 +1007,10 @@ async function get(symbol){
   ){
 
     throw new Error(
-
       result.error ||
       symbol +
       " HTTP " +
       response.status
-
     );
 
   }
@@ -1203,9 +1035,7 @@ async function get(symbol){
 
 
 /*
- * ============================
- * 添加结果
- * ============================
+ * 添加币种结果
  */
 
 function addResult(
@@ -1236,64 +1066,104 @@ function addResult(
     );
 
 
-  name.className =
-    "coin-name";
-
-
   name.textContent =
     symbol;
 
 
-  const result =
+  const status =
     document.createElement(
       "div"
     );
 
 
-  result.className =
-    "coin-result " +
-    (cls || "");
+  status.className =
+    cls || "";
 
 
-  result.textContent =
+  status.textContent =
     text;
 
 
   row.appendChild(name);
 
-  row.appendChild(result);
+  row.appendChild(status);
 
   box.appendChild(row);
 
-
-  return result;
-
 }
 
 
 /*
- * ============================
- * 格式化金额
- * ============================
+ * 百分比
  */
 
-function money(n){
+function pct(x){
 
-  return n.toLocaleString(
-    "en-US",
-    {
-      minimumFractionDigits:2,
-      maximumFractionDigits:2
-    }
-  );
+  return (
+    x * 100
+  ).toFixed(2) +
+  "%";
 
 }
 
 
 /*
- * ============================
+ * 计算最大回撤
+ */
+
+function calculateDrawdown(
+  trades
+){
+
+  let equity = 1;
+
+  let peak = 1;
+
+  let maxDD = 0;
+
+
+  for(
+    const t of trades
+  ){
+
+    equity *=
+      1 + t.ret;
+
+
+    if(
+      equity > peak
+    ){
+
+      peak =
+        equity;
+
+    }
+
+
+    const dd =
+      (peak-equity) /
+      peak;
+
+
+    if(
+      dd > maxDD
+    ){
+
+      maxDD =
+        dd;
+
+    }
+
+  }
+
+
+  return maxDD;
+
+}
+
+
+/*
  * 主回测
- * ============================
  */
 
 async function run(){
@@ -1322,10 +1192,6 @@ async function run(){
     );
 
 
-  /*
-   * 禁止重复点击
-   */
-
   button.disabled =
     true;
 
@@ -1347,14 +1213,6 @@ async function run(){
    */
 
   document.getElementById(
-    "initial"
-  ).textContent =
-    money(
-      INITIAL_CAPITAL
-    );
-
-
-  document.getElementById(
     "final"
   ).textContent =
     "—";
@@ -1391,6 +1249,30 @@ async function run(){
 
 
   document.getElementById(
+    "longTrades"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "longWin"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "shortTrades"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "shortWin"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
     "coins"
   ).textContent =
     "0/" +
@@ -1398,19 +1280,26 @@ async function run(){
 
 
   /*
-   * 保存每个币种结果
+   * 所有交易
    */
 
-  const coinResults = [];
+  const allTrades =
+    [];
+
+
+  /*
+   * 每个币种结果
+   */
+
+  const coinResults =
+    [];
 
 
   let success = 0;
 
 
   /*
-   * ==========================
-   * 一个一个币种回测
-   * ==========================
+   * 一个一个读取
    */
 
   for(
@@ -1429,22 +1318,39 @@ async function run(){
       " ……";
 
 
-    const currentStatus =
-      addResult(
-        symbol,
-        "读取中……",
-        "running"
+    addResult(
+      symbol,
+      "读取中……",
+      "running"
+    );
+
+
+    const rows =
+      results.querySelectorAll(
+        ".coin"
       );
+
+
+    const currentRow =
+      rows[
+        rows.length-1
+      ];
+
+
+    const currentStatus =
+      currentRow.children[1];
 
 
     try{
 
       /*
-       * 获取行情
+       * 获取 3000 根
        */
 
       const data =
-        await get(symbol);
+        await get(
+          symbol
+        );
 
 
       /*
@@ -1452,64 +1358,73 @@ async function run(){
        */
 
       const result =
-        calc(
-          data,
-          symbol
-        );
+        calc(data);
 
 
-      coinResults.push(
-        result
+      const trades =
+        result.trades;
+
+
+      /*
+       * 保存交易
+       */
+
+      allTrades.push(
+        ...trades
       );
+
+
+      coinResults.push({
+
+        symbol,
+
+        trades,
+
+        equity:
+          result.finalEquity
+
+      });
 
 
       success++;
 
 
-      const resultClass =
-        result.returnPct >= 0
-          ? "positive"
-          : "negative";
+      /*
+       * 币种收益
+       */
 
-
-      currentStatus.className =
-        "coin-result " +
-        resultClass;
-
-
-      const sign =
-        result.returnPct >= 0
-          ? "+"
-          : "";
+      const coinReturn =
+        result.finalEquity -
+        1;
 
 
       currentStatus.textContent =
         "成功 · " +
         data.length +
         " 根K线 · " +
-        result.trades.length +
+        trades.length +
         " 笔交易 · " +
-        sign +
-        result.returnPct.toFixed(2) +
-        "%";
+        pct(coinReturn);
+
+
+      currentStatus.className =
+        coinReturn >= 0
+          ? "good"
+          : "bad";
 
 
     }catch(err){
-
-      currentStatus.className =
-        "coin-result fail";
-
 
       currentStatus.textContent =
         "失败：" +
         err.message;
 
+
+      currentStatus.className =
+        "fail";
+
     }
 
-
-    /*
-     * 更新进度
-     */
 
     const percent =
       (
@@ -1519,7 +1434,8 @@ async function run(){
 
 
     progress.style.width =
-      percent + "%";
+      percent +
+      "%";
 
 
     document.getElementById(
@@ -1533,275 +1449,181 @@ async function run(){
 
 
   /*
-   * ==========================
-   * 汇总所有交易
-   * ==========================
+   * 没有交易
    */
 
-  const allTrades = [];
-
-
-  for(
-    const result of coinResults
+  if(
+    allTrades.length === 0
   ){
 
-    for(
-      const trade of result.trades
-    ){
+    status.textContent =
+      "回测完成，但没有产生交易";
 
-      allTrades.push(
-        trade
-      );
 
-    }
+    button.disabled =
+      false;
+
+
+    button.textContent =
+      "重新开始回测";
+
+
+    return;
 
   }
 
 
   /*
-   * ==========================
-   * 最终资金
-   *
-   * 每个币种自己的1000 USDT
-   * 独立复利。
-   *
-   * 最后再相加。
-   * ==========================
+   * 组合权益
    */
 
-  let finalCapital = 0;
-
-
-  for(
-    const result of coinResults
-  ){
-
-    finalCapital +=
-      result.finalCapital;
-
-  }
-
-
-  /*
-   * ==========================
-   * 总收益
-   * ==========================
-   */
-
-  const totalReturn =
-    (
-      finalCapital /
-      INITIAL_CAPITAL -
-      1
-    ) * 100;
-
-
-  /*
-   * ==========================
-   * 胜率
-   * ==========================
-   */
-
-  const wins =
-    allTrades.filter(
-      x => x.ret > 0
-    ).length;
-
-
-  const winRate =
-    allTrades.length
-      ? wins /
-        allTrades.length *
-        100
-      : 0;
-
-
-  /*
-   * ==========================
-   * Profit Factor
-   *
-   * 总盈利 / 总亏损绝对值
-   * ==========================
-   */
-
-  let grossProfit = 0;
-
-  let grossLoss = 0;
+  let equity = 1;
 
 
   for(
     const trade of allTrades
   ){
 
-    if(trade.ret > 0){
-
-      grossProfit +=
-        trade.ret;
-
-    }else{
-
-      grossLoss +=
-        Math.abs(
-          trade.ret
-        );
-
-    }
+    equity *=
+      1 + trade.ret;
 
   }
+
+
+  /*
+   * 最终资金
+   */
+
+  const finalCapital =
+    INITIAL_CAPITAL *
+    equity;
+
+
+  /*
+   * 总收益
+   */
+
+  const totalReturn =
+    equity - 1;
+
+
+  /*
+   * 胜率
+   */
+
+  const wins =
+    allTrades.filter(
+      x => x.ret > 0
+    );
+
+
+  const losses =
+    allTrades.filter(
+      x => x.ret < 0
+    );
+
+
+  const winRate =
+    wins.length /
+    allTrades.length;
+
+
+  /*
+   * Profit Factor
+   *
+   * 总盈利 / 总亏损绝对值
+   */
+
+  const grossProfit =
+    wins.reduce(
+      (sum,x) =>
+        sum + x.ret,
+      0
+    );
+
+
+  const grossLoss =
+    Math.abs(
+      losses.reduce(
+        (sum,x) =>
+          sum + x.ret,
+        0
+      )
+    );
 
 
   const profitFactor =
     grossLoss > 0
       ? grossProfit /
         grossLoss
+      : Infinity;
+
+
+  /*
+   * 最大回撤
+   */
+
+  const maxDD =
+    calculateDrawdown(
+      allTrades
+    );
+
+
+  /*
+   * 多空
+   */
+
+  const longTrades =
+    allTrades.filter(
+      x => x.side === "LONG"
+    );
+
+
+  const shortTrades =
+    allTrades.filter(
+      x => x.side === "SHORT"
+    );
+
+
+  const longWins =
+    longTrades.filter(
+      x => x.ret > 0
+    );
+
+
+  const shortWins =
+    shortTrades.filter(
+      x => x.ret > 0
+    );
+
+
+  const longWinRate =
+    longTrades.length
+      ? longWins.length /
+        longTrades.length
+      : 0;
+
+
+  const shortWinRate =
+    shortTrades.length
+      ? shortWins.length /
+        shortTrades.length
       : 0;
 
 
   /*
-   * ==========================
-   * 最大回撤
-   *
-   * 使用“已实现交易结果”
-   * 构建组合资金曲线。
-   *
-   * 每个币种开始时都有1000。
-   * ==========================
-   */
-
-  const equityByCoin = {};
-
-
-  for(
-    const result of coinResults
-  ){
-
-    equityByCoin[
-      result.symbol
-    ] =
-      CAPITAL_PER_COIN;
-
-  }
-
-
-  /*
-   * 按退出K线排序。
-   *
-   * 由于10个币种的K线
-   * 时间基本同步，
-   * 这里使用 exitIndex
-   * 做组合曲线。
-   */
-
-  const sortedTrades =
-    [...allTrades].sort(
-      (a,b) =>
-        a.exitIndex -
-        b.exitIndex
-    );
-
-
-  let equity =
-    INITIAL_CAPITAL;
-
-
-  let peak =
-    INITIAL_CAPITAL;
-
-
-  let maxDrawdown = 0;
-
-
-  for(
-    const trade of sortedTrades
-  ){
-
-    const oldCapital =
-      equityByCoin[
-        trade.symbol
-      ] ||
-      CAPITAL_PER_COIN;
-
-
-    const newCapital =
-      oldCapital *
-      (1 + trade.ret);
-
-
-    equityByCoin[
-      trade.symbol
-    ] =
-      newCapital;
-
-
-    /*
-     * 重新计算组合资金
-     */
-
-    equity = 0;
-
-
-    for(
-      const symbol of
-      Object.keys(equityByCoin)
-    ){
-
-      equity +=
-        equityByCoin[
-          symbol
-        ];
-
-    }
-
-
-    /*
-     * 峰值
-     */
-
-    if(
-      equity > peak
-    ){
-
-      peak =
-        equity;
-
-    }
-
-
-    /*
-     * 回撤
-     */
-
-    const dd =
-      (
-        peak -
-        equity
-      ) /
-      peak;
-
-
-    if(
-      dd > maxDrawdown
-    ){
-
-      maxDrawdown =
-        dd;
-
-    }
-
-  }
-
-
-  /*
-   * ==========================
-   * 显示最终结果
-   * ==========================
+   * 显示
    */
 
   document.getElementById(
     "final"
   ).textContent =
-    money(
-      finalCapital
+    finalCapital.toLocaleString(
+      undefined,
+      {
+        minimumFractionDigits:2,
+        maximumFractionDigits:2
+      }
     ) +
     " USDT";
 
@@ -1809,23 +1631,24 @@ async function run(){
   document.getElementById(
     "ret"
   ).textContent =
+    pct(totalReturn);
+
+
+  document.getElementById(
+    "ret"
+  ).className =
+    "v " +
     (
       totalReturn >= 0
-        ? "+"
-        : ""
-    ) +
-    totalReturn.toFixed(2) +
-    "%";
+        ? "good"
+        : "bad"
+    );
 
 
   document.getElementById(
     "drawdown"
   ).textContent =
-    (
-      maxDrawdown *
-      100
-    ).toFixed(2) +
-    "%";
+    pct(maxDD);
 
 
   document.getElementById(
@@ -1837,45 +1660,45 @@ async function run(){
   document.getElementById(
     "win"
   ).textContent =
-    allTrades.length
-      ? winRate.toFixed(1) +
-        "%"
-      : "—";
+    pct(winRate);
 
 
   document.getElementById(
     "pf"
   ).textContent =
-    profitFactor
+    Number.isFinite(
+      profitFactor
+    )
       ? profitFactor.toFixed(2)
+      : "∞";
+
+
+  document.getElementById(
+    "longTrades"
+  ).textContent =
+    longTrades.length;
+
+
+  document.getElementById(
+    "longWin"
+  ).textContent =
+    longTrades.length
+      ? pct(longWinRate)
       : "—";
 
 
   document.getElementById(
-    "coins"
+    "shortTrades"
   ).textContent =
-    success +
-    "/" +
-    symbols.length;
+    shortTrades.length;
 
 
-  /*
-   * 收益颜色
-   */
-
-  const retElement =
-    document.getElementById(
-      "ret"
-    );
-
-
-  retElement.className =
-    "v " +
-    (
-      totalReturn >= 0
-        ? "positive"
-        : "negative"
-    );
+  document.getElementById(
+    "shortWin"
+  ).textContent =
+    shortTrades.length
+      ? pct(shortWinRate)
+      : "—";
 
 
   /*
@@ -1899,9 +1722,7 @@ async function run(){
 
 }
 
-
 </script>
-
 
 </body>
 
