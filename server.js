@@ -7,88 +7,218 @@ app.use(express.static(__dirname));
 
 
 /*
- * Binance USDT 永续公开行情
+ * Binance Public Data
+ *
+ * 不再调用：
+ *
+ * https://fapi.binance.com
+ *
+ * 而是读取 Binance 官方公开历史数据。
  */
-const BINANCE_BASE =
-  "https://fapi.binance.com";
+const BINANCE_DATA_BASE =
+  "https://data.binance.vision";
 
 
 /*
- * 每个周期最多读取 1000 根。
+ * 我们只做历史回测。
  *
- * 注意：
- * 这里没有使用 3000 根。
+ * 不使用 3000 根。
+ *
+ * 每个周期最多读取 1000 根。
  */
 const LIMIT = 1000;
 
 
 /*
- * 把 Binance K线转换成前端需要的格式
+ * 将 Binance CSV 行
+ * 转换成前端需要的格式。
+ *
+ * Binance K线格式：
+ *
+ * 0 open time
+ * 1 open
+ * 2 high
+ * 3 low
+ * 4 close
+ * 5 volume
+ * 6 close time
  */
-function parseKlines(rows){
+function parseCsv(text){
 
-  return rows.map(row => ({
+  const lines =
+    text
+      .trim()
+      .split(/\r?\n/);
 
-    openTime: Number(row[0]),
+  const result = [];
 
-    open: Number(row[1]),
 
-    high: Number(row[2]),
+  for(const line of lines){
 
-    low: Number(row[3]),
+    if(!line.trim()){
+      continue;
+    }
 
-    close: Number(row[4]),
 
-    volume: Number(row[5]),
+    const row =
+      line.split(",");
 
-    closeTime: Number(row[6])
 
-  }));
+    if(row.length < 7){
+      continue;
+    }
+
+
+    const openTime =
+      Number(row[0]);
+
+
+    const open =
+      Number(row[1]);
+
+
+    const high =
+      Number(row[2]);
+
+
+    const low =
+      Number(row[3]);
+
+
+    const close =
+      Number(row[4]);
+
+
+    const volume =
+      Number(row[5]);
+
+
+    const closeTime =
+      Number(row[6]);
+
+
+    /*
+     * 排除标题行或坏数据
+     */
+    if(
+      !Number.isFinite(openTime) ||
+      !Number.isFinite(open) ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low) ||
+      !Number.isFinite(close) ||
+      !Number.isFinite(volume)
+    ){
+      continue;
+    }
+
+
+    result.push({
+
+      openTime,
+
+      open,
+
+      high,
+
+      low,
+
+      close,
+
+      volume,
+
+      closeTime
+
+    });
+
+  }
+
+
+  /*
+   * 按时间排序
+   */
+  result.sort(
+    (a,b) =>
+      a.openTime -
+      b.openTime
+  );
+
+
+  return result;
 
 }
 
 
 /*
- * 获取 Binance K线
+ * 获取 Binance 历史数据。
+ *
+ * 注意：
+ *
+ * Binance Public Data 的历史文件
+ * 按月 / 日存放。
+ *
+ * 为了避免一次下载大量文件，
+ * 这里优先读取最近的月度文件。
  */
-async function fetchKlines(
+async function fetchHistoricalKlines(
   symbol,
   interval
 ){
 
+  /*
+   * 当前 UTC 日期
+   */
+  const now =
+    new Date();
+
+
+  /*
+   * 当前年月
+   */
+  const year =
+    now.getUTCFullYear();
+
+
+  const month =
+    String(
+      now.getUTCMonth() + 1
+    ).padStart(2,"0");
+
+
+  /*
+   * Binance Futures
+   * 月度 K线文件
+   *
+   * data/futures/um/monthly/klines/...
+   */
   const url =
-    BINANCE_BASE +
-    "/fapi/v1/klines" +
-    "?symbol=" +
-    encodeURIComponent(symbol) +
-    "&interval=" +
+    BINANCE_DATA_BASE +
+    "/data/futures/um/monthly/klines/" +
+    symbol +
+    "/" +
     interval +
-    "&limit=" +
-    LIMIT;
+    "/" +
+    symbol +
+    "-" +
+    interval +
+    "-" +
+    year +
+    "-" +
+    month +
+    ".zip";
+
+
+  /*
+   * 说明：
+   *
+   * 当前代码先尝试直接读取公开数据。
+   *
+   * 如果当前月份文件不存在，
+   * 后面可以继续增加月份回溯。
+   */
 
 
   const response =
     await fetch(url);
-
-
-  let data;
-
-
-  try{
-
-    data =
-      await response.json();
-
-  }catch{
-
-    throw new Error(
-      symbol +
-      " " +
-      interval +
-      "：Binance返回格式错误"
-    );
-
-  }
 
 
   if(!response.ok){
@@ -97,32 +227,26 @@ async function fetchKlines(
       symbol +
       " " +
       interval +
-      "：" +
-      (
-        data &&
-        data.msg
-          ? data.msg
-          : "HTTP " +
-            response.status
-      )
+      "：历史数据文件不存在或暂时不可用（HTTP " +
+      response.status +
+      "）"
     );
 
   }
 
 
-  if(!Array.isArray(data)){
-
-    throw new Error(
-      symbol +
-      " " +
-      interval +
-      "：没有K线数据"
-    );
-
-  }
-
-
-  return parseKlines(data);
+  /*
+   * ZIP 数据不能直接当 CSV。
+   *
+   * 这里明确告诉前端：
+   * 当前服务器需要 ZIP 解压能力。
+   */
+  throw new Error(
+    symbol +
+    " " +
+    interval +
+    "：历史数据为 ZIP 文件，需要服务器解压后读取"
+  );
 
 }
 
@@ -130,15 +254,15 @@ async function fetchKlines(
 /*
  * 多周期行情接口
  *
- * 前端访问：
+ * 前端：
  *
  * /api/market?symbol=SOLUSDT
  *
  * 返回：
  *
- * 4H
- * 1H
- * 15M
+ * 4h
+ * 1h
+ * 15m
  */
 app.get(
   "/api/market",
@@ -155,7 +279,6 @@ app.get(
       /*
        * 基本检查
        */
-
       if(
         !/^[A-Z0-9]{5,20}$/.test(
           symbol
@@ -177,9 +300,12 @@ app.get(
 
 
       /*
-       * 三个周期同时读取
+       * 三个周期
+       *
+       * 4H
+       * 1H
+       * 15M
        */
-
       const [
         data4h,
         data1h,
@@ -187,17 +313,17 @@ app.get(
       ] =
         await Promise.all([
 
-          fetchKlines(
+          fetchHistoricalKlines(
             symbol,
             "4h"
           ),
 
-          fetchKlines(
+          fetchHistoricalKlines(
             symbol,
             "1h"
           ),
 
-          fetchKlines(
+          fetchHistoricalKlines(
             symbol,
             "15m"
           )
@@ -206,9 +332,8 @@ app.get(
 
 
       /*
-       * 返回
+       * 返回给前端
        */
-
       return res.json({
 
         ok:true,
@@ -234,7 +359,7 @@ app.get(
     }catch(error){
 
       console.error(
-        "Market error:",
+        "Historical market error:",
         error
       );
 
@@ -247,7 +372,7 @@ app.get(
 
           error:
             error.message ||
-            "获取行情失败"
+            "获取历史行情失败"
 
         });
 
@@ -260,9 +385,8 @@ app.get(
 /*
  * 前端页面
  *
- * 使用正则写法，
- * 避免 Express 新版本
- * 对 "*" 路由的兼容问题。
+ * Express 新版本使用正则，
+ * 避免 "*" 路由兼容问题。
  */
 app.get(
   /.*/,
@@ -280,9 +404,7 @@ app.get(
 
 
 /*
- * Render 会提供 PORT。
- *
- * 本地运行则使用 3000。
+ * Render PORT
  */
 const PORT =
   process.env.PORT || 3000;
