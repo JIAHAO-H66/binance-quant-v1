@@ -11,12 +11,9 @@ app.use(express.static(__dirname));
  * ============================================================
  * Quant V2 数据服务器
  *
- * 不再访问：
+ * 数据来源：
  *
- * https://fapi.binance.com
- *
- * 改为读取 Binance 官方公开历史数据：
- *
+ * Binance Public Data
  * https://data.binance.vision
  *
  * 数据：
@@ -26,40 +23,61 @@ app.use(express.static(__dirname));
  * 1H
  * 15M
  *
- * 只用于历史回测。
- * 不下单。
+ * 用途：
+ *
+ * 历史回测
+ * 不下单
  * ============================================================
  */
 
-
-/*
- * Binance Public Data
- */
 const BINANCE_DATA_BASE =
   "https://data.binance.vision";
 
 
 /*
- * 每个周期最终最多返回多少根。
+ * ============================================================
+ * 回测周期
+ *
+ * 最近 6 个月
  *
  * 注意：
  *
- * 不是 3000。
+ * 这里的 6 个月是实际回测周期，
+ * 不是只下载 6 个月。
  *
- * 我们保持原来的 1000 根左右的数据规模。
+ * 为了让 EMA200 / EMA50 / ATR 等指标
+ * 在回测开始位置能够正常计算，
+ * 会额外读取一部分更早的历史数据
+ * 作为指标预热数据。
+ * ============================================================
  */
-const LIMIT = 1000;
+
+const BACKTEST_MONTHS = 6;
+
+
+/*
+ * ============================================================
+ * 指标预热
+ *
+ * 4H：
+ * EMA200
+ *
+ * 1H：
+ * EMA50
+ *
+ * 15M：
+ * EMA50 + ATR14
+ *
+ * 为了安全，统一额外读取更多历史月份。
+ * ============================================================
+ */
+
+const WARMUP_MONTHS = 2;
 
 
 /*
  * ============================================================
  * 内存缓存
- *
- * Render 服务器启动以后，
- * 第一次读取会下载历史 ZIP。
- *
- * 后面的请求直接使用缓存，
- * 不需要重复下载。
  * ============================================================
  */
 
@@ -68,28 +86,15 @@ const cache = new Map();
 
 /*
  * ============================================================
- * interval 对应需要回溯多少个月
- *
- * 4H：
- * 1000 根约需要 167 天
- * 所以读取最近几个月。
- *
- * 1H：
- * 1000 根约需要 42 天。
- *
- * 15M：
- * 1000 根约需要 10.5 天。
- *
- * 我们统一最多向前找 6 个月。
- * ============================================================
- */
-
-const MAX_MONTHS_BACK = 6;
-
-
-/*
- * ============================================================
  * 日期工具
+ *
+ * offset = 0
+ * 当前月份
+ *
+ * offset = 1
+ * 上个月
+ *
+ * 依此类推。
  * ============================================================
  */
 
@@ -97,6 +102,7 @@ function getMonthInfo(offset){
 
   const now =
     new Date();
+
 
   const date =
     new Date(
@@ -128,15 +134,68 @@ function getMonthInfo(offset){
 
 /*
  * ============================================================
+ * 获取当前月份开始时间
+ * ============================================================
+ */
+
+function getCurrentMonthStart(){
+
+  const now =
+    new Date();
+
+
+  return Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    1
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * 获取六个月前的月份开始时间
+ *
+ * 例如：
+ *
+ * 当前是 2026-09
+ *
+ * 则回测开始月份为：
+ *
+ * 2026-03
+ *
+ * ============================================================
+ */
+
+function getBacktestStartTime(){
+
+  const now =
+    new Date();
+
+
+  return Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth() - BACKTEST_MONTHS,
+    1
+  );
+
+}
+
+
+/*
+ * ============================================================
  * 构造 Binance Public Data URL
  *
- * 官方 USD-M Futures 路径：
+ * 官方 USD-M Futures：
  *
  * /data/futures/um/monthly/klines/
- * SYMBOL/
- * INTERVAL/
- * FILE.zip
  *
+ * SYMBOL
+ *
+ * INTERVAL
+ *
+ * FILE.zip
  * ============================================================
  */
 
@@ -167,22 +226,10 @@ function buildUrl(
 /*
  * ============================================================
  * CSV → K线
- *
- * Binance K线前 7 列：
- *
- * 0 Open time
- * 1 Open
- * 2 High
- * 3 Low
- * 4 Close
- * 5 Volume
- * 6 Close time
  * ============================================================
  */
 
-function parseCsv(
-  text
-){
+function parseCsv(text){
 
   const lines =
     text
@@ -211,18 +258,16 @@ function parseCsv(
       line.split(",");
 
 
-    /*
-     * 有些公开数据文件可能带标题。
-     *
-     * 如果第一列不是数字，
-     * 直接跳过。
-     */
-
     const openTime =
       Number(
         row[0]
       );
 
+
+    /*
+     * 如果有标题行，
+     * 直接跳过。
+     */
 
     if(
       !Number.isFinite(
@@ -264,7 +309,8 @@ function parseCsv(
       !Number.isFinite(high) ||
       !Number.isFinite(low) ||
       !Number.isFinite(close) ||
-      !Number.isFinite(volume)
+      !Number.isFinite(volume) ||
+      !Number.isFinite(closeTime)
     ){
 
       continue;
@@ -304,9 +350,7 @@ function parseCsv(
  * ============================================================
  */
 
-function extractZipCsv(
-  buffer
-){
+function extractZipCsv(buffer){
 
   const zip =
     new AdmZip(
@@ -318,9 +362,6 @@ function extractZipCsv(
     zip.getEntries();
 
 
-  /*
-   * 找 CSV 文件
-   */
   const csvEntry =
     entries.find(
       entry =>
@@ -344,9 +385,6 @@ function extractZipCsv(
     csvEntry.getData();
 
 
-  /*
-   * Binance CSV 是普通文本。
-   */
   const text =
     csvBuffer.toString(
       "utf8"
@@ -362,7 +400,7 @@ function extractZipCsv(
 
 /*
  * ============================================================
- * 下载一个月的历史数据
+ * 下载一个月
  * ============================================================
  */
 
@@ -398,11 +436,13 @@ async function downloadMonth(
 
 
   /*
-   * 当前月份文件可能还没有，
-   * 也可能某个币种当时还没有上市。
+   * 某个月份没有数据：
    *
-   * 404 不直接让整个程序崩溃。
+   * 例如币种尚未上市。
+   *
+   * 不让整个回测失败。
    */
+
   if(
     response.status === 404
   ){
@@ -452,12 +492,18 @@ async function downloadMonth(
 
 /*
  * ============================================================
- * 获取最近历史 K线
+ * 获取历史数据
  *
- * 从当前月份开始向过去寻找。
+ * 这里和原来的最大区别：
  *
- * 一旦拿到足够的数据，
- * 就停止继续下载。
+ * 不再使用 LIMIT = 1000。
+ *
+ * 而是完整读取：
+ *
+ * 指标预热月份
+ * +
+ * 最近 6 个月
+ *
  * ============================================================
  */
 
@@ -471,8 +517,9 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 已经缓存
+   * 缓存
    */
+
   if(
     cache.has(cacheKey)
   ){
@@ -488,12 +535,27 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 从当前月份开始，
-   * 向过去寻找。
+   * 需要读取的月份数量：
+   *
+   * 最近 6 个月
+   * +
+   * 额外 2 个月预热
+   *
+   * 总共读取最近 8 个月。
    */
+
+  const totalMonths =
+    BACKTEST_MONTHS +
+    WARMUP_MONTHS;
+
+
+  /*
+   * 从当前月份往过去读取。
+   */
+
   for(
     let offset = 0;
-    offset < MAX_MONTHS_BACK;
+    offset < totalMonths;
     offset++
   ){
 
@@ -528,21 +590,6 @@ async function fetchHistoricalKlines(
 
       }
 
-
-      /*
-       * 如果已经超过 LIMIT，
-       * 可以停止下载。
-       *
-       * 后面统一排序 + 截取。
-       */
-      if(
-        all.length >= LIMIT
-      ){
-
-        break;
-
-      }
-
     }catch(error){
 
       console.error(
@@ -558,6 +605,7 @@ async function fetchHistoricalKlines(
   /*
    * 按时间排序
    */
+
   all.sort(
     (a,b) =>
       a.openTime -
@@ -566,12 +614,10 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 去重。
-   *
-   * 以 openTime 作为 K线唯一标识。
+   * 去重
    */
-  const unique =
-    [];
+
+  const unique = [];
 
 
   const seen =
@@ -606,20 +652,36 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 只保留最近 LIMIT 根。
+   * ==========================================================
+   * 只保留：
+   *
+   * 六个月回测
+   * +
+   * 前面的指标预热
+   *
+   * 因为我们已经读取了
+   * BACKTEST_MONTHS + WARMUP_MONTHS，
+   * 所以这里不再进行 1000 根限制。
+   * ==========================================================
    */
+
+  const backtestStart =
+    getBacktestStartTime();
+
+
   const result =
-    unique.length > LIMIT
-      ? unique.slice(
-          unique.length - LIMIT
-        )
-      : unique;
+    unique.filter(
+      row =>
+        row.closeTime >=
+        backtestStart
+    );
 
 
   /*
-   * 如果数据太少，
-   * 不要让前端误以为正常。
+   * 如果没有数据，
+   * 返回错误。
    */
+
   if(
     result.length === 0
   ){
@@ -632,8 +694,9 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 放入缓存。
+   * 缓存
    */
+
   cache.set(
     cacheKey,
     result
@@ -654,8 +717,6 @@ async function fetchHistoricalKlines(
 /*
  * ============================================================
  * 多周期行情接口
- *
- * 前端调用：
  *
  * /api/market?symbol=SOLUSDT
  *
@@ -685,6 +746,7 @@ app.get(
       /*
        * 基本检查
        */
+
       if(
         !/^[A-Z0-9]{5,20}$/.test(
           symbol
@@ -712,17 +774,9 @@ app.get(
 
 
       /*
-       * 三个周期同时读取。
-       *
-       * 4H：
-       * 大方向
-       *
-       * 1H：
-       * 趋势确认
-       *
-       * 15M：
-       * 交易
+       * 三个周期同时读取
        */
+
       const [
         data4h,
         data1h,
@@ -751,6 +805,7 @@ app.get(
       /*
        * 返回
        */
+
       return res.json({
 
         ok:true,
@@ -803,17 +858,16 @@ app.get(
  * ============================================================
  * 清除缓存
  *
- * 如果以后想让 Render 重新下载数据，
- * 可以访问：
- *
  * /api/cache/clear
- *
  * ============================================================
  */
 
 app.get(
   "/api/cache/clear",
-  (req,res) => {
+  (
+    req,
+    res
+  ) => {
 
     cache.clear();
 
@@ -835,15 +889,16 @@ app.get(
  * ============================================================
  * 查看服务器状态
  *
- * 方便我们以后排错。
- *
  * /api/status
  * ============================================================
  */
 
 app.get(
   "/api/status",
-  (req,res) => {
+  (
+    req,
+    res
+  ) => {
 
     return res.json({
 
@@ -854,6 +909,12 @@ app.get(
 
       type:
         "USD-M Futures historical data",
+
+      backtestMonths:
+        BACKTEST_MONTHS,
+
+      warmupMonths:
+        WARMUP_MONTHS,
 
       intervals:[
         "4h",
@@ -874,8 +935,7 @@ app.get(
  * ============================================================
  * 前端页面
  *
- * Express 5 使用正则路由，
- * 避免 "*" 路由兼容问题。
+ * Express 5 使用正则路由。
  * ============================================================
  */
 
