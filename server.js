@@ -11,22 +11,19 @@ app.use(express.static(__dirname));
  * ============================================================
  * Quant V2 数据服务器
  *
- * 数据来源：
+ * Binance USD-M Futures
  *
- * Binance Public Data
+ * 数据来源：
  * https://data.binance.vision
  *
- * 数据：
+ * 正式回测：
+ * 最近 6 个完整月份
  *
- * USD-M Futures
- * 4H
- * 1H
- * 15M
+ * 指标预热：
+ * 额外 2 个月
  *
- * 用途：
- *
- * 历史回测
  * 不下单
+ * 只做历史回测
  * ============================================================
  */
 
@@ -35,50 +32,25 @@ const BINANCE_DATA_BASE =
 
 
 /*
- * ============================================================
- * 回测周期
- *
- * 最近 6 个月
- *
- * 注意：
- *
- * 这里的 6 个月是实际回测周期，
- * 不是只下载 6 个月。
- *
- * 为了让 EMA200 / EMA50 / ATR 等指标
- * 在回测开始位置能够正常计算，
- * 会额外读取一部分更早的历史数据
- * 作为指标预热数据。
- * ============================================================
+ * 正式回测月份
  */
 
 const BACKTEST_MONTHS = 6;
 
 
 /*
- * ============================================================
- * 指标预热
+ * 指标预热月份
  *
- * 4H：
- * EMA200
+ * EMA200 需要比较长的历史。
  *
- * 1H：
- * EMA50
- *
- * 15M：
- * EMA50 + ATR14
- *
- * 为了安全，统一额外读取更多历史月份。
- * ============================================================
+ * 这里额外取 2 个月。
  */
 
 const WARMUP_MONTHS = 2;
 
 
 /*
- * ============================================================
- * 内存缓存
- * ============================================================
+ * 缓存
  */
 
 const cache = new Map();
@@ -86,55 +58,7 @@ const cache = new Map();
 
 /*
  * ============================================================
- * 日期工具
- *
- * offset = 0
- * 当前月份
- *
- * offset = 1
- * 上个月
- *
- * 依此类推。
- * ============================================================
- */
-
-function getMonthInfo(offset){
-
-  const now =
-    new Date();
-
-
-  const date =
-    new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth() - offset,
-        1
-      )
-    );
-
-
-  const year =
-    date.getUTCFullYear();
-
-
-  const month =
-    String(
-      date.getUTCMonth() + 1
-    ).padStart(2, "0");
-
-
-  return {
-    year,
-    month
-  };
-
-}
-
-
-/*
- * ============================================================
- * 获取当前月份开始时间
+ * 当前月份开始时间
  * ============================================================
  */
 
@@ -142,7 +66,6 @@ function getCurrentMonthStart(){
 
   const now =
     new Date();
-
 
   return Date.UTC(
     now.getUTCFullYear(),
@@ -155,24 +78,27 @@ function getCurrentMonthStart(){
 
 /*
  * ============================================================
- * 获取六个月前的月份开始时间
+ * 正式回测开始时间
+ *
+ * 当前月份往前 6 个完整月份。
  *
  * 例如：
  *
- * 当前是 2026-09
+ * 2026-09
  *
- * 则回测开始月份为：
+ * 回测：
  *
- * 2026-03
+ * 2026-03-01
+ * 到
+ * 2026-09-01
  *
  * ============================================================
  */
 
-function getBacktestStartTime(){
+function getBacktestStart(){
 
   const now =
     new Date();
-
 
   return Date.UTC(
     now.getUTCFullYear(),
@@ -185,17 +111,70 @@ function getBacktestStartTime(){
 
 /*
  * ============================================================
- * 构造 Binance Public Data URL
+ * 数据开始时间
  *
- * 官方 USD-M Futures：
+ * 正式回测开始之前，
+ * 再额外取 WARMUP_MONTHS。
+ * ============================================================
+ */
+
+function getDataStart(){
+
+  const now =
+    new Date();
+
+  return Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth() -
+      BACKTEST_MONTHS -
+      WARMUP_MONTHS,
+    1
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * 根据 offset 获取月份
  *
- * /data/futures/um/monthly/klines/
- *
- * SYMBOL
- *
- * INTERVAL
- *
- * FILE.zip
+ * offset 0 = 当前月份
+ * offset 1 = 上个月
+ * ============================================================
+ */
+
+function getMonthInfo(offset){
+
+  const now =
+    new Date();
+
+  const date =
+    new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth() - offset,
+        1
+      )
+    );
+
+  return {
+
+    year:
+      date.getUTCFullYear(),
+
+    month:
+      String(
+        date.getUTCMonth() + 1
+      ).padStart(2, "0")
+
+  };
+
+}
+
+
+/*
+ * ============================================================
+ * 构造 Binance 月度 K线 URL
  * ============================================================
  */
 
@@ -208,7 +187,6 @@ function buildUrl(
 
   const fileName =
     `${symbol}-${interval}-${year}-${month}.zip`;
-
 
   return (
     BINANCE_DATA_BASE +
@@ -225,7 +203,7 @@ function buildUrl(
 
 /*
  * ============================================================
- * CSV → K线
+ * CSV 解析
  * ============================================================
  */
 
@@ -235,7 +213,6 @@ function parseCsv(text){
     text
       .trim()
       .split(/\r?\n/);
-
 
   const result = [];
 
@@ -259,14 +236,11 @@ function parseCsv(text){
 
 
     const openTime =
-      Number(
-        row[0]
-      );
+      Number(row[0]);
 
 
     /*
-     * 如果有标题行，
-     * 直接跳过。
+     * 跳过 CSV 标题
      */
 
     if(
@@ -283,22 +257,17 @@ function parseCsv(text){
     const open =
       Number(row[1]);
 
-
     const high =
       Number(row[2]);
-
 
     const low =
       Number(row[3]);
 
-
     const close =
       Number(row[4]);
 
-
     const volume =
       Number(row[5]);
-
 
     const closeTime =
       Number(row[6]);
@@ -346,16 +315,14 @@ function parseCsv(text){
 
 /*
  * ============================================================
- * 解压 ZIP
+ * 解压 Binance ZIP
  * ============================================================
  */
 
 function extractZipCsv(buffer){
 
   const zip =
-    new AdmZip(
-      buffer
-    );
+    new AdmZip(buffer);
 
 
   const entries =
@@ -375,25 +342,19 @@ function extractZipCsv(buffer){
   if(!csvEntry){
 
     throw new Error(
-      "ZIP 中没有找到 CSV 文件"
+      "ZIP 中没有 CSV 文件"
     );
 
   }
 
 
-  const csvBuffer =
-    csvEntry.getData();
-
-
   const text =
-    csvBuffer.toString(
-      "utf8"
-    );
+    csvEntry
+      .getData()
+      .toString("utf8");
 
 
-  return parseCsv(
-    text
-  );
+  return parseCsv(text);
 
 }
 
@@ -427,20 +388,12 @@ async function downloadMonth(
 
 
   const response =
-    await fetch(
-      url,
-      {
-        method:"GET"
-      }
-    );
+    await fetch(url);
 
 
   /*
-   * 某个月份没有数据：
-   *
-   * 例如币种尚未上市。
-   *
-   * 不让整个回测失败。
+   * 币种尚未上市，
+   * 或该月份没有文件。
    */
 
   if(
@@ -448,13 +401,12 @@ async function downloadMonth(
   ){
 
     console.log(
-      "File not found:",
+      "Not found:",
       symbol,
       interval,
       year,
       month
     );
-
 
     return [];
 
@@ -466,7 +418,7 @@ async function downloadMonth(
   ){
 
     throw new Error(
-      `${symbol} ${interval} ${year}-${month}：` +
+      `${symbol} ${interval} ${year}-${month} ` +
       `HTTP ${response.status}`
     );
 
@@ -477,14 +429,8 @@ async function downloadMonth(
     await response.arrayBuffer();
 
 
-  const buffer =
-    Buffer.from(
-      arrayBuffer
-    );
-
-
   return extractZipCsv(
-    buffer
+    Buffer.from(arrayBuffer)
   );
 
 }
@@ -492,18 +438,15 @@ async function downloadMonth(
 
 /*
  * ============================================================
- * 获取历史数据
+ * 获取完整历史数据
  *
- * 这里和原来的最大区别：
+ * 这里不再限制 1000 根。
  *
- * 不再使用 LIMIT = 1000。
+ * 例如 15M：
  *
- * 而是完整读取：
+ * 6个月 ≈ 17,000+ 根
  *
- * 指标预热月份
- * +
- * 最近 6 个月
- *
+ * 这是正常的。
  * ============================================================
  */
 
@@ -516,32 +459,34 @@ async function fetchHistoricalKlines(
     `${symbol}_${interval}`;
 
 
-  /*
-   * 缓存
-   */
-
   if(
     cache.has(cacheKey)
   ){
 
-    return cache.get(
-      cacheKey
-    );
+    return cache.get(cacheKey);
 
   }
+
+
+  const dataStart =
+    getDataStart();
+
+
+  const currentMonthStart =
+    getCurrentMonthStart();
 
 
   let all = [];
 
 
   /*
-   * 需要读取的月份数量：
+   * 从当前月份往过去找。
    *
-   * 最近 6 个月
+   * 读取：
+   *
+   * 正式回测 6 个月
    * +
-   * 额外 2 个月预热
-   *
-   * 总共读取最近 8 个月。
+   * 预热 2 个月
    */
 
   const totalMonths =
@@ -549,13 +494,9 @@ async function fetchHistoricalKlines(
     WARMUP_MONTHS;
 
 
-  /*
-   * 从当前月份往过去读取。
-   */
-
   for(
-    let offset = 0;
-    offset < totalMonths;
+    let offset = 1;
+    offset <= totalMonths;
     offset++
   ){
 
@@ -563,9 +504,7 @@ async function fetchHistoricalKlines(
       year,
       month
     } =
-      getMonthInfo(
-        offset
-      );
+      getMonthInfo(offset);
 
 
     try{
@@ -584,16 +523,14 @@ async function fetchHistoricalKlines(
       ){
 
         all =
-          all.concat(
-            rows
-          );
+          all.concat(rows);
 
       }
 
     }catch(error){
 
       console.error(
-        "Download month error:",
+        "Month download error:",
         error.message
       );
 
@@ -603,7 +540,7 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 按时间排序
+   * 排序
    */
 
   all.sort(
@@ -619,7 +556,6 @@ async function fetchHistoricalKlines(
 
   const unique = [];
 
-
   const seen =
     new Set();
 
@@ -629,9 +565,7 @@ async function fetchHistoricalKlines(
   ){
 
     if(
-      seen.has(
-        row.openTime
-      )
+      seen.has(row.openTime)
     ){
 
       continue;
@@ -644,58 +578,41 @@ async function fetchHistoricalKlines(
     );
 
 
-    unique.push(
-      row
-    );
+    unique.push(row);
 
   }
 
 
   /*
-   * ==========================================================
    * 只保留：
    *
-   * 六个月回测
-   * +
-   * 前面的指标预热
+   * 预热开始
+   * 到
+   * 当前月份开始
    *
-   * 因为我们已经读取了
-   * BACKTEST_MONTHS + WARMUP_MONTHS，
-   * 所以这里不再进行 1000 根限制。
-   * ==========================================================
+   * 注意：
+   *
+   * 当前未完成月份不进入正式回测。
    */
-
-  const backtestStart =
-    getBacktestStartTime();
-
 
   const result =
     unique.filter(
       row =>
-        row.closeTime >=
-        backtestStart
+        row.openTime >= dataStart &&
+        row.openTime < currentMonthStart
     );
 
-
-  /*
-   * 如果没有数据，
-   * 返回错误。
-   */
 
   if(
     result.length === 0
   ){
 
     throw new Error(
-      `${symbol} ${interval}：没有找到历史K线`
+      `${symbol} ${interval}：没有历史K线`
     );
 
   }
 
-
-  /*
-   * 缓存
-   */
 
   cache.set(
     cacheKey,
@@ -705,7 +622,7 @@ async function fetchHistoricalKlines(
 
   console.log(
     `${symbol} ${interval}: ` +
-    `${result.length} candles cached`
+    `${result.length} candles`
   );
 
 
@@ -716,15 +633,9 @@ async function fetchHistoricalKlines(
 
 /*
  * ============================================================
- * 多周期行情接口
+ * 行情接口
  *
  * /api/market?symbol=SOLUSDT
- *
- * 返回：
- *
- * 4H
- * 1H
- * 15M
  * ============================================================
  */
 
@@ -742,10 +653,6 @@ app.get(
           req.query.symbol || ""
         ).toUpperCase();
 
-
-      /*
-       * 基本检查
-       */
 
       if(
         !/^[A-Z0-9]{5,20}$/.test(
@@ -773,10 +680,6 @@ app.get(
       );
 
 
-      /*
-       * 三个周期同时读取
-       */
-
       const [
         data4h,
         data1h,
@@ -802,15 +705,27 @@ app.get(
         ]);
 
 
-      /*
-       * 返回
-       */
-
       return res.json({
 
         ok:true,
 
         symbol,
+
+        meta:{
+
+          backtestMonths:
+            BACKTEST_MONTHS,
+
+          warmupMonths:
+            WARMUP_MONTHS,
+
+          backtestStart:
+            getBacktestStart(),
+
+          backtestEnd:
+            getCurrentMonthStart()
+
+        },
 
         data:{
 
@@ -857,8 +772,6 @@ app.get(
 /*
  * ============================================================
  * 清除缓存
- *
- * /api/cache/clear
  * ============================================================
  */
 
@@ -887,9 +800,7 @@ app.get(
 
 /*
  * ============================================================
- * 查看服务器状态
- *
- * /api/status
+ * 状态
  * ============================================================
  */
 
@@ -907,14 +818,24 @@ app.get(
       source:
         "Binance Public Data",
 
-      type:
-        "USD-M Futures historical data",
+      market:
+        "USD-M Futures",
 
       backtestMonths:
         BACKTEST_MONTHS,
 
       warmupMonths:
         WARMUP_MONTHS,
+
+      backtestStart:
+        new Date(
+          getBacktestStart()
+        ).toISOString(),
+
+      backtestEnd:
+        new Date(
+          getCurrentMonthStart()
+        ).toISOString(),
 
       intervals:[
         "4h",
@@ -933,9 +854,7 @@ app.get(
 
 /*
  * ============================================================
- * 前端页面
- *
- * Express 5 使用正则路由。
+ * 前端
  * ============================================================
  */
 
@@ -959,7 +878,7 @@ app.get(
 
 /*
  * ============================================================
- * Render PORT
+ * Render
  * ============================================================
  */
 
