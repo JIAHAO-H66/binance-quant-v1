@@ -1,176 +1,1430 @@
-const express = require("express");
-const path = require("path");
-const AdmZip = require("adm-zip");
+<!doctype html>
+<html lang="zh-CN">
 
-const app = express();
+<head>
 
-app.use(express.static(__dirname));
+<meta charset="utf-8">
+
+<meta
+  name="viewport"
+  content="width=device-width,initial-scale=1"
+>
+
+<title>Quant V2 · 山寨币合约回测</title>
+
+<style>
+
+*{
+  box-sizing:border-box;
+}
+
+body{
+  margin:0;
+  background:#f5f6f8;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  color:#111;
+}
+
+.wrap{
+  max-width:720px;
+  margin:auto;
+  padding:18px;
+}
+
+.card{
+  background:#fff;
+  border-radius:18px;
+  padding:18px;
+  margin:12px 0;
+  box-shadow:0 3px 16px #0000000d;
+}
+
+h1{
+  font-size:25px;
+  margin:4px 0 8px;
+}
+
+h2{
+  margin:4px 0 14px;
+}
+
+.muted{
+  color:#70757d;
+  font-size:14px;
+  line-height:1.6;
+}
+
+button{
+  width:100%;
+  border:0;
+  border-radius:13px;
+  padding:15px;
+  font-size:17px;
+  background:#111;
+  color:#fff;
+  cursor:pointer;
+}
+
+button:disabled{
+  opacity:.5;
+}
+
+.metric{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin-top:14px;
+}
+
+.m{
+  background:#f1f2f4;
+  border-radius:13px;
+  padding:14px;
+}
+
+.v{
+  font-size:22px;
+  font-weight:700;
+  margin-top:5px;
+}
+
+.progress{
+  height:8px;
+  background:#e5e7eb;
+  border-radius:20px;
+  overflow:hidden;
+  margin-top:14px;
+}
+
+.progress-bar{
+  height:100%;
+  width:0%;
+  background:#111;
+  transition:width .25s;
+}
+
+.coin{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  padding:13px 0;
+  border-bottom:1px solid #eee;
+  font-size:15px;
+}
+
+.coin:last-child{
+  border-bottom:0;
+}
+
+.ok{
+  color:#198754;
+}
+
+.fail{
+  color:#d93025;
+}
+
+.running{
+  color:#555;
+}
+
+.good{
+  color:#198754;
+}
+
+.bad{
+  color:#d93025;
+}
+
+.neutral{
+  color:#555;
+}
+
+pre{
+  white-space:pre-wrap;
+  word-break:break-word;
+  font-size:13px;
+  line-height:1.5;
+  margin:0;
+}
+
+.small{
+  font-size:13px;
+  color:#70757d;
+  line-height:1.6;
+}
+
+.note{
+  background:#f7f7f8;
+  border-radius:12px;
+  padding:13px;
+  margin-top:12px;
+  font-size:13px;
+  line-height:1.6;
+  color:#666;
+}
+
+.period{
+  background:#f7f7f8;
+  border-radius:13px;
+  padding:13px;
+  margin-top:14px;
+  font-size:13px;
+  line-height:1.7;
+}
+
+.period strong{
+  color:#111;
+}
+
+@media(max-width:500px){
+
+  .wrap{
+    padding:12px;
+  }
+
+  .card{
+    padding:16px;
+  }
+
+  .coin{
+    font-size:14px;
+  }
+
+}
+
+</style>
+
+</head>
+
+
+<body>
+
+
+<div class="wrap">
+
+
+<div class="card">
+
+  <h1>
+    Quant V2 · 山寨币合约回测
+  </h1>
+
+  <div class="muted">
+
+    Binance USDT 永续 · 4H → 1H → 15M · 多空<br>
+
+    4H 定方向 · 1H 看趋势 · 15M 做交易<br>
+
+    手续费 · 滑点 · 最大回撤 · Binance 公共历史数据 · 不下单
+
+  </div>
+
+
+  <div
+    class="period"
+    id="periodInfo"
+  >
+
+    正在读取回测区间……
+
+  </div>
+
+
+  <br>
+
+
+  <button
+    id="go"
+    onclick="run()"
+  >
+    开始回测
+  </button>
+
+
+  <div class="progress">
+
+    <div
+      id="progressBar"
+      class="progress-bar"
+    ></div>
+
+  </div>
+
+</div>
+
+
+<div class="card">
+
+  <div
+    id="status"
+    class="muted"
+  >
+    等待开始
+  </div>
+
+
+  <div class="metric">
+
+
+    <div class="m">
+
+      初始资金
+
+      <div
+        class="v"
+        id="initial"
+      >
+        10,000
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      最终资金
+
+      <div
+        class="v"
+        id="final"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      总收益
+
+      <div
+        class="v"
+        id="ret"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      最大回撤
+
+      <div
+        class="v"
+        id="drawdown"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      交易次数
+
+      <div
+        class="v"
+        id="trades"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      胜率
+
+      <div
+        class="v"
+        id="win"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      Profit Factor
+
+      <div
+        class="v"
+        id="pf"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      币种
+
+      <div
+        class="v"
+        id="coins"
+      >
+        0/10
+      </div>
+
+    </div>
+
+
+  </div>
+
+</div>
+
+
+<div class="card">
+
+  <h2>
+    多空统计
+  </h2>
+
+
+  <div class="metric">
+
+
+    <div class="m">
+
+      多单次数
+
+      <div
+        class="v"
+        id="longTrades"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      多单胜率
+
+      <div
+        class="v"
+        id="longWin"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      空单次数
+
+      <div
+        class="v"
+        id="shortTrades"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="m">
+
+      空单胜率
+
+      <div
+        class="v"
+        id="shortWin"
+      >
+        —
+      </div>
+
+    </div>
+
+
+  </div>
+
+</div>
+
+
+<div class="card">
+
+  <h2>
+    币种回测结果
+  </h2>
+
+
+  <div id="results">
+
+    <div class="small">
+
+      点击“开始回测”后显示结果
+
+    </div>
+
+  </div>
+
+</div>
+
+
+<div class="card">
+
+  <h2>
+    当前策略
+  </h2>
+
+
+  <pre>
+正式回测：
+最近 6 个完整月份
+
+指标预热：
+额外 2 个月
+
+4H：
+EMA50 / EMA200 定大方向
+
+1H：
+EMA20 / EMA50 确认趋势
+
+15M：
+EMA20 / EMA50 趋势确认
+
+价格突破上一根15M K线高点/低点后入场
+
+ATR(14) × 1.5 止损
+
+多空双向
+
+手续费：单边 0.05%
+
+滑点：单边 0.02%
+
+初始资金：10,000 USDT
+
+每笔交易按当前权益复利
+
+仅用于历史研究，不代表未来收益
+  </pre>
+
+
+  <div class="note">
+
+    前 2 个月只用于 EMA / ATR 指标预热，
+    不产生正式交易。
+
+    <br><br>
+
+    正式回测只统计最近 6 个完整月份。
+
+    <br><br>
+
+    当前正在进行的月份不会进入回测。
+
+    <br><br>
+
+    回测过程中不会使用未来 K 线数据。
+
+  </div>
+
+</div>
+
+
+</div>
+
+
+<script>
 
 
 /*
  * ============================================================
- * Quant V2 数据服务器
- *
- * Binance USD-M Futures
- *
- * 数据来源：
- * https://data.binance.vision
- *
- * 正式回测：
- * 最近 6 个完整月份
- *
- * 指标预热：
- * 额外 2 个月
- *
- * 不下单
- * 只做历史回测
+ * 回测币种
  * ============================================================
  */
 
-const BINANCE_DATA_BASE =
-  "https://data.binance.vision";
+const symbols = [
 
+  "SOLUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
+  "ADAUSDT",
+  "AVAXUSDT",
+  "LINKUSDT",
+  "SUIUSDT",
+  "APTUSDT",
+  "NEARUSDT",
+  "INJUSDT"
 
-/*
- * 正式回测月份
- */
-
-const BACKTEST_MONTHS = 6;
-
-
-/*
- * 指标预热月份
- */
-
-const WARMUP_MONTHS = 2;
-
-
-/*
- * 缓存
- */
-
-const cache = new Map();
+];
 
 
 /*
  * ============================================================
- * 当前月份开始时间
+ * 参数
  * ============================================================
  */
 
-function getCurrentMonthStart(){
+const INITIAL_CAPITAL =
+  10000;
 
-  const now =
-    new Date();
+const FEE =
+  0.0005;
 
-  return Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    1
-  );
+const SLIPPAGE =
+  0.0002;
+
+
+/*
+ * ============================================================
+ * EMA
+ * ============================================================
+ */
+
+function ema(a,n){
+
+  if(!a.length){
+
+    return [];
+
+  }
+
+  const k =
+    2 / (n + 1);
+
+  let e =
+    a[0];
+
+  const out =
+    [e];
+
+
+  for(
+    let i=1;
+    i<a.length;
+    i++
+  ){
+
+    e =
+      a[i] * k +
+      e * (1-k);
+
+    out.push(e);
+
+  }
+
+
+  return out;
 
 }
 
 
 /*
  * ============================================================
- * 正式回测开始时间
- *
- * 例如当前为 2026-09：
- *
- * 正式回测：
- *
- * 2026-03-01
- * 到
- * 2026-09-01
- *
- * 当前 2026-09 月不参与。
+ * ATR
  * ============================================================
  */
 
-function getBacktestStart(){
+function atr(
+  data,
+  n=14
+){
 
-  const now =
-    new Date();
+  const out =
+    new Array(
+      data.length
+    ).fill(NaN);
 
-  return Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth() - BACKTEST_MONTHS,
-    1
-  );
+
+  const tr =
+    new Array(
+      data.length
+    ).fill(NaN);
+
+
+  for(
+    let i=1;
+    i<data.length;
+    i++
+  ){
+
+    const prev =
+      data[i-1].close;
+
+
+    tr[i] =
+      Math.max(
+
+        data[i].high -
+        data[i].low,
+
+        Math.abs(
+          data[i].high -
+          prev
+        ),
+
+        Math.abs(
+          data[i].low -
+          prev
+        )
+
+      );
+
+  }
+
+
+  for(
+    let i=n;
+    i<data.length;
+    i++
+  ){
+
+    let sum =
+      0;
+
+
+    for(
+      let j=i-n+1;
+      j<=i;
+      j++
+    ){
+
+      sum +=
+        tr[j] || 0;
+
+    }
+
+
+    out[i] =
+      sum / n;
+
+  }
+
+
+  return out;
 
 }
 
 
 /*
  * ============================================================
- * 数据开始时间
- *
- * 正式回测开始之前，
- * 再额外取 2 个月指标预热。
- *
- * 例如：
- *
- * 正式：
- * 2026-03
- * ~
- * 2026-08
- *
- * 预热：
- * 2026-01
- * ~
- * 2026-02
+ * 找到某个时间点之前
+ * 最新已经完成的K线
  * ============================================================
  */
 
-function getDataStart(){
+function latestBefore(
+  data,
+  time
+){
 
-  const now =
-    new Date();
+  let lo =
+    0;
 
-  return Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth() -
-      BACKTEST_MONTHS -
-      WARMUP_MONTHS,
-    1
-  );
+  let hi =
+    data.length - 1;
+
+  let answer =
+    -1;
+
+
+  while(
+    lo <= hi
+  ){
+
+    const mid =
+      Math.floor(
+        (lo + hi) / 2
+      );
+
+
+    if(
+      data[mid].closeTime <= time
+    ){
+
+      answer =
+        mid;
+
+      lo =
+        mid + 1;
+
+    }else{
+
+      hi =
+        mid - 1;
+
+    }
+
+  }
+
+
+  return answer;
 
 }
 
 
 /*
  * ============================================================
- * 根据 offset 获取月份
- *
- * offset 0 = 当前月份
- * offset 1 = 上个月
+ * 多周期回测
  * ============================================================
  */
 
-function getMonthInfo(offset){
+function calc(
+  data4h,
+  data1h,
+  data15m,
+  backtestStart,
+  backtestEnd
+){
 
-  const now =
-    new Date();
+  if(
+    data4h.length < 220 ||
+    data1h.length < 60 ||
+    data15m.length < 60
+  ){
 
-  const date =
-    new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth() - offset,
-        1
-      )
+    return {
+
+      trades:[],
+
+      finalEquity:1
+
+    };
+
+  }
+
+
+  /*
+   * 4H
+   */
+
+  const c4 =
+    data4h.map(
+      x => x.close
     );
+
+
+  const e4_50 =
+    ema(c4,50);
+
+
+  const e4_200 =
+    ema(c4,200);
+
+
+  /*
+   * 1H
+   */
+
+  const c1 =
+    data1h.map(
+      x => x.close
+    );
+
+
+  const e1_20 =
+    ema(c1,20);
+
+
+  const e1_50 =
+    ema(c1,50);
+
+
+  /*
+   * 15M
+   */
+
+  const c15 =
+    data15m.map(
+      x => x.close
+    );
+
+
+  const e15_20 =
+    ema(c15,20);
+
+
+  const e15_50 =
+    ema(c15,50);
+
+
+  const a15 =
+    atr(
+      data15m,
+      14
+    );
+
+
+  const trades =
+    [];
+
+
+  let pos =
+    0;
+
+  let entry =
+    0;
+
+  let equity =
+    1;
+
+  let entryAtr =
+    0;
+
+
+  /*
+   * 从15M开始。
+   *
+   * 注意：
+   *
+   * 预热区只用于计算指标，
+   * 正式回测必须 >= backtestStart。
+   */
+
+  for(
+    let i=60;
+    i<data15m.length;
+    i++
+  ){
+
+    const candle =
+      data15m[i];
+
+
+    const time =
+      candle.closeTime;
+
+
+    /*
+     * 预热区：
+     *
+     * 不允许产生交易。
+     */
+
+    if(
+      time < backtestStart
+    ){
+
+      continue;
+
+    }
+
+
+    /*
+     * 当前月份：
+     *
+     * 不允许进入正式回测。
+     */
+
+    if(
+      time >= backtestEnd
+    ){
+
+      break;
+
+    }
+
+
+    /*
+     * 找到当时已经完成的4H
+     */
+
+    const i4 =
+      latestBefore(
+        data4h,
+        time
+      );
+
+
+    /*
+     * 找到当时已经完成的1H
+     */
+
+    const i1 =
+      latestBefore(
+        data1h,
+        time
+      );
+
+
+    if(
+      i4 < 200 ||
+      i1 < 50 ||
+      !Number.isFinite(
+        a15[i]
+      )
+    ){
+
+      continue;
+
+    }
+
+
+    /*
+     * 4H 大方向
+     */
+
+    const fourHourBull =
+      e4_50[i4] >
+      e4_200[i4];
+
+
+    const fourHourBear =
+      e4_50[i4] <
+      e4_200[i4];
+
+
+    /*
+     * 1H 趋势
+     */
+
+    const oneHourBull =
+      e1_20[i1] >
+      e1_50[i1];
+
+
+    const oneHourBear =
+      e1_20[i1] <
+      e1_50[i1];
+
+
+    /*
+     * 15M 趋势
+     */
+
+    const fifteenBull =
+      e15_20[i] >
+      e15_50[i];
+
+
+    const fifteenBear =
+      e15_20[i] <
+      e15_50[i];
+
+
+    /*
+     * 多头突破
+     */
+
+    const longTrigger =
+      candle.close >
+      data15m[i-1].high;
+
+
+    /*
+     * 空头突破
+     */
+
+    const shortTrigger =
+      candle.close <
+      data15m[i-1].low;
+
+
+    /*
+     * 没有持仓
+     */
+
+    if(
+      pos === 0
+    ){
+
+      /*
+       * 多头
+       */
+
+      if(
+        fourHourBull &&
+        oneHourBull &&
+        fifteenBull &&
+        longTrigger
+      ){
+
+        pos =
+          1;
+
+
+        entry =
+          candle.close *
+          (1 + SLIPPAGE);
+
+
+        entryAtr =
+          a15[i];
+
+
+        continue;
+
+      }
+
+
+      /*
+       * 空头
+       */
+
+      if(
+        fourHourBear &&
+        oneHourBear &&
+        fifteenBear &&
+        shortTrigger
+      ){
+
+        pos =
+          -1;
+
+
+        entry =
+          candle.close *
+          (1 - SLIPPAGE);
+
+
+        entryAtr =
+          a15[i];
+
+
+        continue;
+
+      }
+
+    }
+
+
+    /*
+     * ========================================================
+     * 多单
+     * ========================================================
+     */
+
+    if(
+      pos === 1
+    ){
+
+      const stop =
+        entry -
+        1.5 * entryAtr;
+
+
+      const directionBroken =
+        !fourHourBull;
+
+
+      const trendBroken =
+        !oneHourBull;
+
+
+      const shortTrendBroken =
+        !fifteenBull;
+
+
+      const stopHit =
+        candle.low <= stop;
+
+
+      if(
+        stopHit ||
+        directionBroken ||
+        trendBroken ||
+        shortTrendBroken
+      ){
+
+        const exit =
+          candle.close *
+          (1 - SLIPPAGE);
+
+
+        const actualExit =
+          stopHit
+            ? stop *
+              (1 - SLIPPAGE)
+            : exit;
+
+
+        const gross =
+          (
+            actualExit -
+            entry
+          ) /
+          entry;
+
+
+        const net =
+          gross -
+          FEE -
+          FEE;
+
+
+        equity *=
+          1 + net;
+
+
+        trades.push({
+
+          side:
+            "LONG",
+
+          entry,
+
+          exit:
+            actualExit,
+
+          ret:
+            net
+
+        });
+
+
+        pos =
+          0;
+
+        entry =
+          0;
+
+        entryAtr =
+          0;
+
+      }
+
+    }
+
+
+    /*
+     * ========================================================
+     * 空单
+     * ========================================================
+     */
+
+    else if(
+      pos === -1
+    ){
+
+      const stop =
+        entry +
+        1.5 * entryAtr;
+
+
+      const directionBroken =
+        !fourHourBear;
+
+
+      const trendBroken =
+        !oneHourBear;
+
+
+      const shortTrendBroken =
+        !fifteenBear;
+
+
+      const stopHit =
+        candle.high >= stop;
+
+
+      if(
+        stopHit ||
+        directionBroken ||
+        trendBroken ||
+        shortTrendBroken
+      ){
+
+        const exit =
+          candle.close *
+          (1 + SLIPPAGE);
+
+
+        const actualExit =
+          stopHit
+            ? stop *
+              (1 + SLIPPAGE)
+            : exit;
+
+
+        const gross =
+          (
+            entry -
+            actualExit
+          ) /
+          entry;
+
+
+        const net =
+          gross -
+          FEE -
+          FEE;
+
+
+        equity *=
+          1 + net;
+
+
+        trades.push({
+
+          side:
+            "SHORT",
+
+          entry,
+
+          exit:
+            actualExit,
+
+          ret:
+            net
+
+        });
+
+
+        pos =
+          0;
+
+        entry =
+          0;
+
+        entryAtr =
+          0;
+
+      }
+
+    }
+
+  }
+
+
+  /*
+   * ============================================================
+   * 正式回测结束
+   *
+   * 只在正式区间最后一根15M平仓。
+   * ============================================================
+   */
+
+  if(
+    pos !== 0
+  ){
+
+    const candidates =
+      data15m.filter(
+        x =>
+          x.closeTime >= backtestStart &&
+          x.closeTime < backtestEnd
+      );
+
+
+    if(
+      candidates.length
+    ){
+
+      const last =
+        candidates[
+          candidates.length - 1
+        ];
+
+
+      let exit;
+
+
+      if(
+        pos === 1
+      ){
+
+        exit =
+          last.close *
+          (1 - SLIPPAGE);
+
+
+        const gross =
+          (
+            exit -
+            entry
+          ) /
+          entry;
+
+
+        const net =
+          gross -
+          FEE -
+          FEE;
+
+
+        equity *=
+          1 + net;
+
+
+        trades.push({
+
+          side:
+            "LONG",
+
+          entry,
+
+          exit,
+
+          ret:
+            net
+
+        });
+
+      }else{
+
+        exit =
+          last.close *
+          (1 + SLIPPAGE);
+
+
+        const gross =
+          (
+            entry -
+            exit
+          ) /
+          entry;
+
+
+        const net =
+          gross -
+          FEE -
+          FEE;
+
+
+        equity *=
+          1 + net;
+
+
+        trades.push({
+
+          side:
+            "SHORT",
+
+          entry,
+
+          exit,
+
+          ret:
+            net
+
+        });
+
+      }
+
+    }
+
+  }
+
 
   return {
 
-    year:
-      date.getUTCFullYear(),
+    trades,
 
-    month:
-      String(
-        date.getUTCMonth() + 1
-      ).padStart(2, "0")
+    finalEquity:
+      equity
 
   };
 
@@ -179,28 +1433,159 @@ function getMonthInfo(offset){
 
 /*
  * ============================================================
- * 构造 Binance 月度 K线 URL
+ * 获取历史数据
  * ============================================================
  */
 
-function buildUrl(
-  symbol,
-  interval,
-  year,
-  month
+async function get(
+  symbol
 ){
 
-  const fileName =
-    `${symbol}-${interval}-${year}-${month}.zip`;
+  const response =
+    await fetch(
+      "/api/market" +
+      "?symbol=" +
+      encodeURIComponent(
+        symbol
+      )
+    );
 
-  return (
-    BINANCE_DATA_BASE +
-    "/data/futures/um/monthly/klines/" +
-    symbol +
-    "/" +
-    interval +
-    "/" +
-    fileName
+
+  let result;
+
+
+  try{
+
+    result =
+      await response.json();
+
+  }catch{
+
+    throw new Error(
+      symbol +
+      "：服务器返回格式错误"
+    );
+
+  }
+
+
+  if(
+    !response.ok ||
+    !result.ok
+  ){
+
+    throw new Error(
+      result.error ||
+      symbol +
+      " HTTP " +
+      response.status
+    );
+
+  }
+
+
+  if(
+    !result.data ||
+    !Array.isArray(
+      result.data["4h"]
+    ) ||
+    !Array.isArray(
+      result.data["1h"]
+    ) ||
+    !Array.isArray(
+      result.data["15m"]
+    )
+  ){
+
+    throw new Error(
+      symbol +
+      "：多周期数据格式错误"
+    );
+
+  }
+
+
+  if(
+    !result.meta
+  ){
+
+    throw new Error(
+      symbol +
+      "：服务器缺少回测时间信息"
+    );
+
+  }
+
+
+  return result;
+
+}
+
+
+/*
+ * ============================================================
+ * 添加币种结果
+ * ============================================================
+ */
+
+function addResult(
+  symbol,
+  text,
+  cls
+){
+
+  const box =
+    document.getElementById(
+      "results"
+    );
+
+
+  const row =
+    document.createElement(
+      "div"
+    );
+
+
+  row.className =
+    "coin";
+
+
+  const name =
+    document.createElement(
+      "div"
+    );
+
+
+  name.textContent =
+    symbol;
+
+
+  const status =
+    document.createElement(
+      "div"
+    );
+
+
+  status.className =
+    cls || "";
+
+
+  status.textContent =
+    text;
+
+
+  row.appendChild(
+    name
+  );
+
+
+  row.appendChild(
+    status
+  );
+
+
+  box.appendChild(
+    row
   );
 
 }
@@ -208,716 +1593,807 @@ function buildUrl(
 
 /*
  * ============================================================
- * CSV 解析
+ * 百分比
  * ============================================================
  */
 
-function parseCsv(text){
+function pct(x){
 
-  const lines =
-    text
-      .trim()
-      .split(/\r?\n/);
+  return (
+    x * 100
+  ).toFixed(2) +
+  "%";
 
-  const result = [];
+}
+
+
+/*
+ * ============================================================
+ * 格式化时间
+ * ============================================================
+ */
+
+function formatDate(
+  timestamp
+){
+
+  if(
+    !Number.isFinite(
+      Number(timestamp)
+    )
+  ){
+
+    return "—";
+
+  }
+
+
+  return new Date(
+    Number(timestamp)
+  ).toISOString()
+   .slice(
+     0,
+     10
+   );
+
+}
+
+
+/*
+ * ============================================================
+ * 最大回撤
+ * ============================================================
+ */
+
+function calculateDrawdown(
+  trades
+){
+
+  let equity =
+    1;
+
+  let peak =
+    1;
+
+  let maxDD =
+    0;
 
 
   for(
-    const line of lines
+    const t of trades
   ){
 
+    equity *=
+      1 + t.ret;
+
+
     if(
-      !line ||
-      !line.trim()
+      equity > peak
     ){
 
-      continue;
+      peak =
+        equity;
 
     }
 
 
-    const row =
-      line.split(",");
+    const dd =
+      (
+        peak -
+        equity
+      ) /
+      peak;
 
 
-    const openTime =
-      Number(row[0]);
+    if(
+      dd > maxDD
+    ){
+
+      maxDD =
+        dd;
+
+    }
+
+  }
+
+
+  return maxDD;
+
+}
+
+
+/*
+ * ============================================================
+ * 主回测
+ * ============================================================
+ */
+
+async function run(){
+
+  const button =
+    document.getElementById(
+      "go"
+    );
+
+
+  const status =
+    document.getElementById(
+      "status"
+    );
+
+
+  const results =
+    document.getElementById(
+      "results"
+    );
+
+
+  const progress =
+    document.getElementById(
+      "progressBar"
+    );
+
+
+  button.disabled =
+    true;
+
+
+  button.textContent =
+    "正在回测……";
+
+
+  results.innerHTML =
+    "";
+
+
+  progress.style.width =
+    "0%";
+
+
+  /*
+   * 重置
+   */
+
+  document.getElementById(
+    "final"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "ret"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "drawdown"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "trades"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "win"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "pf"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "longTrades"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "longWin"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "shortTrades"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "shortWin"
+  ).textContent =
+    "—";
+
+
+  document.getElementById(
+    "coins"
+  ).textContent =
+    "0/" +
+    symbols.length;
+
+
+  try{
+
+    /*
+     * ========================================================
+     * 先读取第一个币种
+     *
+     * 用来取得统一的回测时间区间。
+     * ========================================================
+     */
+
+    const firstData =
+      await get(
+        symbols[0]
+      );
+
+
+    const meta =
+      firstData.meta;
+
+
+    const backtestStart =
+      Number(
+        meta.backtestStart
+      );
+
+
+    const backtestEnd =
+      Number(
+        meta.backtestEnd
+      );
+
+
+    const dataStart =
+      Number(
+        meta.dataStart
+      );
 
 
     /*
-     * 跳过 CSV 标题
+     * 显示回测区间
      */
 
-    if(
-      !Number.isFinite(
-        openTime
-      )
+    document.getElementById(
+      "periodInfo"
+    ).innerHTML =
+
+      "<strong>正式回测：</strong> " +
+
+      formatDate(
+        backtestStart
+      ) +
+
+      " → " +
+
+      formatDate(
+        backtestEnd
+      ) +
+
+      "<br>" +
+
+      "<strong>指标预热：</strong> " +
+
+      formatDate(
+        dataStart
+      ) +
+
+      " → " +
+
+      formatDate(
+        backtestStart
+      ) +
+
+      "<br>" +
+
+      "<strong>当前月份：</strong> 不参与回测";
+
+
+    /*
+     * 所有交易
+     */
+
+    const allTrades =
+      [];
+
+
+    let success =
+      0;
+
+
+    /*
+     * ========================================================
+     * 一个一个币种
+     * ========================================================
+     */
+
+    for(
+      let i=0;
+      i<symbols.length;
+      i++
     ){
 
-      continue;
+      const symbol =
+        symbols[i];
 
-    }
 
+      status.textContent =
+        "正在读取 " +
+        symbol +
+        " 的 4H / 1H / 15M 数据……";
 
-    const open =
-      Number(row[1]);
 
-    const high =
-      Number(row[2]);
+      addResult(
+        symbol,
+        "读取中……",
+        "running"
+      );
 
-    const low =
-      Number(row[3]);
-
-    const close =
-      Number(row[4]);
-
-    const volume =
-      Number(row[5]);
-
-    const closeTime =
-      Number(row[6]);
-
-
-    if(
-      !Number.isFinite(open) ||
-      !Number.isFinite(high) ||
-      !Number.isFinite(low) ||
-      !Number.isFinite(close) ||
-      !Number.isFinite(volume) ||
-      !Number.isFinite(closeTime)
-    ){
-
-      continue;
-
-    }
-
-
-    result.push({
-
-      openTime,
-
-      open,
-
-      high,
-
-      low,
-
-      close,
-
-      volume,
-
-      closeTime
-
-    });
-
-  }
-
-
-  return result;
-
-}
-
-
-/*
- * ============================================================
- * 解压 Binance ZIP
- * ============================================================
- */
-
-function extractZipCsv(buffer){
-
-  const zip =
-    new AdmZip(buffer);
-
-
-  const entries =
-    zip.getEntries();
-
-
-  const csvEntry =
-    entries.find(
-      entry =>
-        !entry.isDirectory &&
-        entry.entryName
-          .toLowerCase()
-          .endsWith(".csv")
-    );
-
-
-  if(!csvEntry){
-
-    throw new Error(
-      "ZIP 中没有 CSV 文件"
-    );
-
-  }
-
-
-  const text =
-    csvEntry
-      .getData()
-      .toString("utf8");
-
-
-  return parseCsv(text);
-
-}
-
-
-/*
- * ============================================================
- * 下载一个月
- * ============================================================
- */
-
-async function downloadMonth(
-  symbol,
-  interval,
-  year,
-  month
-){
-
-  const url =
-    buildUrl(
-      symbol,
-      interval,
-      year,
-      month
-    );
-
-
-  console.log(
-    "Downloading:",
-    url
-  );
-
-
-  const response =
-    await fetch(url);
-
-
-  /*
-   * 币种尚未上市，
-   * 或该月份没有文件。
-   */
-
-  if(
-    response.status === 404
-  ){
-
-    console.log(
-      "Not found:",
-      symbol,
-      interval,
-      year,
-      month
-    );
-
-    return [];
-
-  }
-
-
-  if(
-    !response.ok
-  ){
-
-    throw new Error(
-      `${symbol} ${interval} ${year}-${month} ` +
-      `HTTP ${response.status}`
-    );
-
-  }
-
-
-  const arrayBuffer =
-    await response.arrayBuffer();
-
-
-  return extractZipCsv(
-    Buffer.from(arrayBuffer)
-  );
-
-}
-
-
-/*
- * ============================================================
- * 获取历史数据
- *
- * 正式回测：
- * 6个月
- *
- * 指标预热：
- * 2个月
- *
- * 当前月份：
- * 完全排除
- * ============================================================
- */
-
-async function fetchHistoricalKlines(
-  symbol,
-  interval
-){
-
-  const cacheKey =
-    `${symbol}_${interval}`;
-
-
-  if(
-    cache.has(cacheKey)
-  ){
-
-    return cache.get(cacheKey);
-
-  }
-
-
-  const dataStart =
-    getDataStart();
-
-
-  const currentMonthStart =
-    getCurrentMonthStart();
-
-
-  let all = [];
-
-
-  /*
-   * 总月份：
-   *
-   * 6个月正式回测
-   * +
-   * 2个月预热
-   *
-   * = 8个月
-   */
-
-  const totalMonths =
-    BACKTEST_MONTHS +
-    WARMUP_MONTHS;
-
-
-  /*
-   * offset = 1
-   *
-   * 从上个月开始。
-   *
-   * 当前月份永远不下载。
-   */
-
-  for(
-    let offset = 1;
-    offset <= totalMonths;
-    offset++
-  ){
-
-    const {
-      year,
-      month
-    } =
-      getMonthInfo(offset);
-
-
-    try{
 
       const rows =
-        await downloadMonth(
-          symbol,
-          interval,
-          year,
-          month
+        results.querySelectorAll(
+          ".coin"
         );
 
 
-      if(
-        rows.length
-      ){
+      const currentRow =
+        rows[
+          rows.length - 1
+        ];
 
-        all =
-          all.concat(rows);
+
+      const currentStatus =
+        currentRow.children[1];
+
+
+      try{
+
+        /*
+         * 第一个币种已经提前读取，
+         * 后面不重复请求。
+         */
+
+        const responseData =
+          i === 0
+            ? firstData
+            : await get(
+                symbol
+              );
+
+
+        const data =
+          responseData.data;
+
+
+        /*
+         * 正式回测
+         */
+
+        const result =
+          calc(
+            data["4h"],
+            data["1h"],
+            data["15m"],
+            backtestStart,
+            backtestEnd
+          );
+
+
+        const trades =
+          result.trades;
+
+
+        allTrades.push(
+          ...trades
+        );
+
+
+        success++;
+
+
+        const coinReturn =
+          result.finalEquity -
+          1;
+
+
+        currentStatus.textContent =
+          "成功 · 4H " +
+          data["4h"].length +
+          " · 1H " +
+          data["1h"].length +
+          " · 15M " +
+          data["15m"].length +
+          " · " +
+          trades.length +
+          " 笔交易 · " +
+          pct(
+            coinReturn
+          );
+
+
+        currentStatus.className =
+          coinReturn >= 0
+            ? "good"
+            : "bad";
+
+
+      }catch(err){
+
+        currentStatus.textContent =
+          "失败：" +
+          err.message;
+
+
+        currentStatus.className =
+          "fail";
 
       }
 
-    }catch(error){
 
-      console.error(
-        "Month download error:",
-        error.message
-      );
+      const percent =
+        (
+          (i + 1) /
+          symbols.length
+        ) * 100;
+
+
+      progress.style.width =
+        percent +
+        "%";
+
+
+      document.getElementById(
+        "coins"
+      ).textContent =
+        success +
+        "/" +
+        symbols.length;
 
     }
 
-  }
 
-
-  /*
-   * 按时间排序
-   */
-
-  all.sort(
-    (a,b) =>
-      a.openTime -
-      b.openTime
-  );
-
-
-  /*
-   * 去重
-   */
-
-  const unique = [];
-
-  const seen =
-    new Set();
-
-
-  for(
-    const row of all
-  ){
+    /*
+     * ========================================================
+     * 没有交易
+     * ========================================================
+     */
 
     if(
-      seen.has(row.openTime)
+      allTrades.length === 0
     ){
 
-      continue;
+      status.textContent =
+        "回测完成，但正式6个月没有产生交易";
+
+
+      button.disabled =
+        false;
+
+
+      button.textContent =
+        "重新开始回测";
+
+
+      return;
 
     }
 
 
-    seen.add(
-      row.openTime
+    /*
+     * ========================================================
+     * 组合权益
+     * ========================================================
+     */
+
+    let equity =
+      1;
+
+
+    for(
+      const trade of allTrades
+    ){
+
+      equity *=
+        1 + trade.ret;
+
+    }
+
+
+    const finalCapital =
+      INITIAL_CAPITAL *
+      equity;
+
+
+    const totalReturn =
+      equity - 1;
+
+
+    /*
+     * ========================================================
+     * 胜负
+     * ========================================================
+     */
+
+    const wins =
+      allTrades.filter(
+        x =>
+          x.ret > 0
+      );
+
+
+    const losses =
+      allTrades.filter(
+        x =>
+          x.ret < 0
+      );
+
+
+    const winRate =
+      wins.length /
+      allTrades.length;
+
+
+    /*
+     * ========================================================
+     * Profit Factor
+     * ========================================================
+     */
+
+    const grossProfit =
+      wins.reduce(
+        (
+          sum,
+          x
+        ) =>
+          sum + x.ret,
+        0
+      );
+
+
+    const grossLoss =
+      Math.abs(
+        losses.reduce(
+          (
+            sum,
+            x
+          ) =>
+            sum + x.ret,
+          0
+        )
+      );
+
+
+    const profitFactor =
+      grossLoss > 0
+        ? grossProfit /
+          grossLoss
+        : Infinity;
+
+
+    /*
+     * ========================================================
+     * 最大回撤
+     * ========================================================
+     */
+
+    const maxDD =
+      calculateDrawdown(
+        allTrades
+      );
+
+
+    /*
+     * ========================================================
+     * 多空统计
+     * ========================================================
+     */
+
+    const longTrades =
+      allTrades.filter(
+        x =>
+          x.side === "LONG"
+      );
+
+
+    const shortTrades =
+      allTrades.filter(
+        x =>
+          x.side === "SHORT"
+      );
+
+
+    const longWins =
+      longTrades.filter(
+        x =>
+          x.ret > 0
+      );
+
+
+    const shortWins =
+      shortTrades.filter(
+        x =>
+          x.ret > 0
+      );
+
+
+    const longWinRate =
+      longTrades.length
+        ? longWins.length /
+          longTrades.length
+        : 0;
+
+
+    const shortWinRate =
+      shortTrades.length
+        ? shortWins.length /
+          shortTrades.length
+        : 0;
+
+
+    /*
+     * ========================================================
+     * 显示最终结果
+     * ========================================================
+     */
+
+    document.getElementById(
+      "final"
+    ).textContent =
+      finalCapital.toLocaleString(
+        undefined,
+        {
+          minimumFractionDigits:
+            2,
+
+          maximumFractionDigits:
+            2
+
+        }
+      ) +
+      " USDT";
+
+
+    document.getElementById(
+      "ret"
+    ).textContent =
+      pct(
+        totalReturn
+      );
+
+
+    document.getElementById(
+      "ret"
+    ).className =
+      "v " +
+      (
+        totalReturn >= 0
+          ? "good"
+          : "bad"
+      );
+
+
+    document.getElementById(
+      "drawdown"
+    ).textContent =
+      pct(
+        maxDD
+      );
+
+
+    document.getElementById(
+      "trades"
+    ).textContent =
+      allTrades.length;
+
+
+    document.getElementById(
+      "win"
+    ).textContent =
+      pct(
+        winRate
+      );
+
+
+    document.getElementById(
+      "pf"
+    ).textContent =
+      Number.isFinite(
+        profitFactor
+      )
+        ? profitFactor.toFixed(2)
+        : "∞";
+
+
+    document.getElementById(
+      "longTrades"
+    ).textContent =
+      longTrades.length;
+
+
+    document.getElementById(
+      "longWin"
+    ).textContent =
+      longTrades.length
+        ? pct(
+            longWinRate
+          )
+        : "—";
+
+
+    document.getElementById(
+      "shortTrades"
+    ).textContent =
+      shortTrades.length;
+
+
+    document.getElementById(
+      "shortWin"
+    ).textContent =
+      shortTrades.length
+        ? pct(
+            shortWinRate
+          )
+        : "—";
+
+
+    status.textContent =
+      "回测完成 · 正式回测 " +
+      formatDate(
+        backtestStart
+      ) +
+      " → " +
+      formatDate(
+        backtestEnd
+      ) +
+      " · 成功读取 " +
+      success +
+      "/" +
+      symbols.length +
+      " 个币种";
+
+
+    button.disabled =
+      false;
+
+
+    button.textContent =
+      "重新开始回测";
+
+
+  }catch(error){
+
+    console.error(
+      error
     );
 
 
-    unique.push(row);
+    status.textContent =
+      "回测失败：" +
+      error.message;
+
+
+    button.disabled =
+      false;
+
+
+    button.textContent =
+      "重新开始回测";
 
   }
-
-
-  /*
-   * 最终保留：
-   *
-   * dataStart
-   * 到
-   * currentMonthStart
-   *
-   * 也就是：
-   *
-   * 2个月预热
-   * +
-   * 6个月正式回测
-   */
-
-  const result =
-    unique.filter(
-      row =>
-        row.openTime >= dataStart &&
-        row.openTime < currentMonthStart
-    );
-
-
-  if(
-    result.length === 0
-  ){
-
-    throw new Error(
-      `${symbol} ${interval}：没有历史K线`
-    );
-
-  }
-
-
-  cache.set(
-    cacheKey,
-    result
-  );
-
-
-  console.log(
-    `${symbol} ${interval}: ` +
-    `${result.length} candles`
-  );
-
-
-  return result;
 
 }
 
+</script>
 
-/*
- * ============================================================
- * 行情接口
- *
- * /api/market?symbol=SOLUSDT
- * ============================================================
- */
+</body>
 
-app.get(
-  "/api/market",
-  async (
-    req,
-    res
-  ) => {
-
-    try{
-
-      const symbol =
-        String(
-          req.query.symbol || ""
-        ).toUpperCase();
-
-
-      if(
-        !/^[A-Z0-9]{5,20}$/.test(
-          symbol
-        )
-      ){
-
-        return res
-          .status(400)
-          .json({
-
-            ok:false,
-
-            error:
-              "symbol 参数错误"
-
-          });
-
-      }
-
-
-      console.log(
-        "Market request:",
-        symbol
-      );
-
-
-      const [
-        data4h,
-        data1h,
-        data15m
-      ] =
-        await Promise.all([
-
-          fetchHistoricalKlines(
-            symbol,
-            "4h"
-          ),
-
-          fetchHistoricalKlines(
-            symbol,
-            "1h"
-          ),
-
-          fetchHistoricalKlines(
-            symbol,
-            "15m"
-          )
-
-        ]);
-
-
-      return res.json({
-
-        ok:true,
-
-        symbol,
-
-        meta:{
-
-          backtestMonths:
-            BACKTEST_MONTHS,
-
-          warmupMonths:
-            WARMUP_MONTHS,
-
-          dataStart:
-            getDataStart(),
-
-          backtestStart:
-            getBacktestStart(),
-
-          backtestEnd:
-            getCurrentMonthStart()
-
-        },
-
-        data:{
-
-          "4h":
-            data4h,
-
-          "1h":
-            data1h,
-
-          "15m":
-            data15m
-
-        }
-
-      });
-
-
-    }catch(error){
-
-      console.error(
-        "Market error:",
-        error
-      );
-
-
-      return res
-        .status(500)
-        .json({
-
-          ok:false,
-
-          error:
-            error.message ||
-            "获取历史行情失败"
-
-        });
-
-    }
-
-  }
-);
-
-
-/*
- * ============================================================
- * 清除缓存
- * ============================================================
- */
-
-app.get(
-  "/api/cache/clear",
-  (
-    req,
-    res
-  ) => {
-
-    cache.clear();
-
-
-    return res.json({
-
-      ok:true,
-
-      message:
-        "行情缓存已清除"
-
-    });
-
-  }
-);
-
-
-/*
- * ============================================================
- * 状态
- * ============================================================
- */
-
-app.get(
-  "/api/status",
-  (
-    req,
-    res
-  ) => {
-
-    return res.json({
-
-      ok:true,
-
-      source:
-        "Binance Public Data",
-
-      market:
-        "USD-M Futures",
-
-      backtestMonths:
-        BACKTEST_MONTHS,
-
-      warmupMonths:
-        WARMUP_MONTHS,
-
-      dataStart:
-        new Date(
-          getDataStart()
-        ).toISOString(),
-
-      backtestStart:
-        new Date(
-          getBacktestStart()
-        ).toISOString(),
-
-      backtestEnd:
-        new Date(
-          getCurrentMonthStart()
-        ).toISOString(),
-
-      intervals:[
-        "4h",
-        "1h",
-        "15m"
-      ],
-
-      cacheSize:
-        cache.size
-
-    });
-
-  }
-);
-
-
-/*
- * ============================================================
- * 前端
- * ============================================================
- */
-
-app.get(
-  /.*/,
-  (
-    req,
-    res
-  ) => {
-
-    res.sendFile(
-      path.join(
-        __dirname,
-        "index.html"
-      )
-    );
-
-  }
-);
-
-
-/*
- * ============================================================
- * Render
- * ============================================================
- */
-
-const PORT =
-  process.env.PORT || 3000;
-
-
-app.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-
-    console.log(
-      `Server running on port ${PORT}`
-    );
-
-  }
-);
+</html>
