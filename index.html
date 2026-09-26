@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quant V2.3 · 山寨币合约回测</title>
+<title>Quant V2.4 · 山寨币合约回测 · 交易级诊断</title>
 
 <style>
 *{
@@ -39,6 +39,11 @@ h1{
 
 h2{
   margin:4px 0 14px;
+}
+
+h3{
+  margin:4px 0 10px;
+  font-size:17px;
 }
 
 .muted{
@@ -152,6 +157,65 @@ pre{
   color:#666;
 }
 
+.diag-ok{
+  color:#198754;
+}
+
+.diag-warn{
+  color:#b26a00;
+}
+
+.diag-bad{
+  color:#d93025;
+}
+
+.log{
+  background:#111;
+  color:#eee;
+  border-radius:12px;
+  padding:13px;
+  max-height:360px;
+  overflow:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11px;
+  line-height:1.6;
+}
+
+.log-line{
+  padding:2px 0;
+  border-bottom:1px solid #ffffff12;
+}
+
+.tag{
+  display:inline-block;
+  border-radius:6px;
+  padding:2px 6px;
+  margin-right:5px;
+  background:#333;
+}
+
+table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:12px;
+}
+
+th,
+td{
+  padding:9px 5px;
+  border-bottom:1px solid #eee;
+  text-align:left;
+  vertical-align:top;
+}
+
+th{
+  font-weight:700;
+}
+
+.scroll{
+  overflow-x:auto;
+}
+
 @media(max-width:500px){
 
   .wrap{
@@ -164,6 +228,18 @@ pre{
 
   .coin{
     font-size:14px;
+  }
+
+  .metric{
+    gap:8px;
+  }
+
+  .m{
+    padding:12px;
+  }
+
+  .v{
+    font-size:20px;
   }
 
 }
@@ -181,7 +257,7 @@ pre{
 <div class="card">
 
 <h1>
-Quant V2.3 · 山寨币合约回测
+Quant V2.4 · 山寨币合约回测
 </h1>
 
 <div class="muted">
@@ -190,7 +266,9 @@ Binance USDT 永续 · 4H → 1H → 15M · 多空<br>
 
 4H 定方向 · 1H 看趋势 · 15M 做交易<br>
 
-组合事件驱动回测 · 下一根15M开盘成交 · 风险仓位 · 手续费 · 滑点 · 最大回撤 · 不下单
+组合事件驱动回测 · 下一根15M开盘成交 · 风险仓位 · 手续费 · 滑点 · 最大回撤<br>
+
+<b>V2.4：交易级事件生命周期诊断</b>
 
 </div>
 
@@ -280,13 +358,13 @@ Profit Factor
 
 
 <!-- ========================================================= -->
-<!-- 回测诊断 -->
+<!-- V2.4 事件生命周期诊断 -->
 <!-- ========================================================= -->
 
 <div class="card">
 
 <h2>
-回测诊断
+V2.4 · 交易级诊断
 </h2>
 
 <div class="metric">
@@ -299,8 +377,15 @@ Profit Factor
 </div>
 
 <div class="m">
-进入等待队列
+成功进入等待队列
 <div class="v" id="pendingSignals">
+—
+</div>
+</div>
+
+<div class="m">
+等待队列被执行
+<div class="v" id="scheduledExecuted">
 —
 </div>
 </div>
@@ -313,43 +398,43 @@ Profit Factor
 </div>
 
 <div class="m">
-生成阶段因3仓跳过
+生成阶段3仓跳过
 <div class="v" id="signalSkippedMaxPositions">
 —
 </div>
 </div>
 
 <div class="m">
-执行阶段因3仓跳过
+执行阶段3仓跳过
 <div class="v" id="entrySkipped">
 —
 </div>
 </div>
 
 <div class="m">
-同币种已有仓位跳过
+同币种持仓跳过
 <div class="v" id="entrySkippedExisting">
 —
 </div>
 </div>
 
 <div class="m">
-止损退出
-<div class="v" id="stopExits">
+无当前K线跳过
+<div class="v" id="entrySkippedNoCandle">
 —
 </div>
 </div>
 
 <div class="m">
-趋势退出
-<div class="v" id="trendExits">
+无效仓位跳过
+<div class="v" id="entrySkippedInvalid">
 —
 </div>
 </div>
 
 <div class="m">
-结束强平
-<div class="v" id="endExits">
+过期/未执行信号
+<div class="v" id="pendingExpired">
 —
 </div>
 </div>
@@ -358,80 +443,127 @@ Profit Factor
 
 <div class="note">
 
-诊断顺序：
+<b>V2.4 事件链：</b>
 
 <br><br>
 
-① 看“突破信号”。
+① <b>突破信号</b>
 
 <br>
 
-② 看“进入等待队列”。
+当前已完成15M K线收盘后确认：
 
 <br>
 
-③ 看“实际入场”。
-
-<br>
-
-④ 再看3仓限制是否造成信号损失。
+价格突破上一根15M高点/低点
++
+4H方向
++
+1H趋势
++
+15M趋势。
 
 <br><br>
 
-正常事件链：
-
-<br>
-
-15M收盘确认突破
-→
-产生信号
-→
-进入下一根15M等待队列
-→
-下一根15M开盘
-→
-实际成交。
+↓
 
 <br><br>
 
-如果：
+② <b>进入等待队列</b>
 
 <br>
 
-突破信号 > 0
-
-但
-
-进入等待队列 = 0
-
-说明信号产生逻辑有问题。
+把信号安排到下一根15M K线开盘。
 
 <br><br>
 
-如果：
-
-<br>
-
-进入等待队列 > 实际入场
-
-需要继续看：
-
-<br>
-
-“生成阶段因3仓跳过”
-
-<br>
-
-“执行阶段因3仓跳过”
-
-<br>
-
-“同币种已有仓位跳过”。
+↓
 
 <br><br>
 
-这样可以明确知道信号究竟在哪一个事件阶段消失。
+③ <b>等待队列执行</b>
 
+<br>
+
+下一根15M开盘时，系统真正尝试执行这个信号。
+
+<br><br>
+
+↓
+
+<br><br>
+
+④ <b>实际入场</b>
+
+<br>
+
+通过最大持仓、同币种持仓、组合杠杆、风险仓位检查后建立仓位。
+
+<br><br>
+
+↓
+
+<br><br>
+
+⑤ <b>持仓</b>
+
+<br>
+
+随后每根15M检查止损和趋势退出。
+
+<br><br>
+
+↓
+
+<br><br>
+
+⑥ <b>平仓</b>
+
+<br>
+
+STOP / TREND / END。
+
+<br><br>
+
+这样我们可以明确判断：
+
+<br><br>
+
+<b>信号有没有产生？</b>
+
+<br>
+
+<b>信号有没有进入队列？</b>
+
+<br>
+
+<b>队列有没有到执行时间？</b>
+
+<br>
+
+<b>执行时为什么没有成交？</b>
+
+<br>
+
+<b>成交以后为什么退出？</b>
+
+</div>
+
+</div>
+
+
+<!-- ========================================================= -->
+<!-- 诊断结论 -->
+<!-- ========================================================= -->
+
+<div class="card">
+
+<h2>
+自动诊断
+</h2>
+
+<div id="diagnosis" class="note">
+等待回测完成
 </div>
 
 </div>
@@ -605,41 +737,41 @@ Profit Factor
 
 </div>
 
-<div class="note">
+</div>
 
-平均实际风险：
 
-所有实际成交仓位的风险占入场时组合权益比例的平均值。
+<!-- ========================================================= -->
+<!-- 平仓原因 -->
+<!-- ========================================================= -->
 
-<br><br>
+<div class="card">
 
-最大实际风险：
+<h2>
+平仓统计
+</h2>
 
-所有实际成交仓位中最高的实际风险比例。
+<div class="metric">
 
-<br><br>
+<div class="m">
+止损退出
+<div class="v" id="stopExits">
+—
+</div>
+</div>
 
-最大组合名义：
+<div class="m">
+趋势退出
+<div class="v" id="trendExits">
+—
+</div>
+</div>
 
-回测过程中同时持有仓位时，
-按照当时市场价格计算的组合所有仓位名义价值之和的最高值。
-
-<br><br>
-
-最大组合杠杆：
-
-回测过程中：
-
-当前组合市场名义 ÷ 当前组合权益
-
-的最大值。
-
-<br><br>
-
-平均持仓数：
-
-整个正式回测期间，
-每个15M时间点平均持有多少个仓位。
+<div class="m">
+结束强平
+<div class="v" id="endExits">
+—
+</div>
+</div>
 
 </div>
 
@@ -660,6 +792,92 @@ Profit Factor
 
 <div class="small">
 点击“开始回测”后显示结果
+</div>
+
+</div>
+
+</div>
+
+
+<!-- ========================================================= -->
+<!-- 每币种事件诊断 -->
+<!-- ========================================================= -->
+
+<div class="card">
+
+<h2>
+币种事件诊断
+</h2>
+
+<div class="scroll">
+
+<table>
+
+<thead>
+
+<tr>
+
+<th>币种</th>
+
+<th>信号</th>
+
+<th>等待</th>
+
+<th>执行</th>
+
+<th>入场</th>
+
+<th>3仓跳过</th>
+
+<th>同币种</th>
+
+<th>交易</th>
+
+</tr>
+
+</thead>
+
+<tbody id="diagnosticTable">
+
+<tr>
+
+<td colspan="8">
+等待回测
+</td>
+
+</tr>
+
+</tbody>
+
+</table>
+
+</div>
+
+</div>
+
+
+<!-- ========================================================= -->
+<!-- 最近事件日志 -->
+<!-- ========================================================= -->
+
+<div class="card">
+
+<h2>
+最近事件日志
+</h2>
+
+<div class="small">
+
+这里只显示最后若干条事件，用于快速确认交易生命周期。
+
+</div>
+
+<br>
+
+<div id="eventLog" class="log">
+
+<div class="log-line">
+等待回测……
 </div>
 
 </div>
@@ -724,24 +942,57 @@ ATR(14) × 1.5
 
 <div class="note">
 
-组合回测按所有币种的15M事件统一推进。
+<b>事件顺序：</b>
 
 <br><br>
 
-每根15M K线有两个关键事件：
+当前15M开盘：
 
 <br>
 
-1）开盘：执行上一根K线收盘产生的入场信号。
-
-<br>
-
-2）收盘：检查趋势退出，并在收盘确认新的突破信号。
+执行上一根15M收盘产生的等待信号。
 
 <br><br>
 
-突破信号在当前已完成15M K线收盘后确认，
-下一根15M K线开盘成交。
+当前15M内部：
+
+<br>
+
+检查已经存在仓位的止损。
+
+<br><br>
+
+当前15M收盘：
+
+<br>
+
+检查趋势退出。
+
+<br>
+
+然后确认新的突破信号。
+
+<br><br>
+
+新的突破信号不会在当前K线立即成交。
+
+<br>
+
+它会进入下一根15M开盘的等待队列。
+
+<br><br>
+
+因此：
+
+<br>
+
+<b>当前K线收盘产生信号</b>
+
+↓
+
+<br>
+
+<b>下一根K线开盘成交</b>
 
 <br><br>
 
@@ -776,46 +1027,6 @@ ATR(14) × 1.5
 因此，单独15M EMA20 / EMA50反转，
 不会立即强制平仓。
 
-<br><br>
-
-仓位计算：
-
-<br>
-
-首先按照单笔0.50%风险计算理论仓位。
-
-<br>
-
-然后检查组合剩余可用名义价值。
-
-<br>
-
-整个组合所有持仓的<b>当前市场名义价值</b>不得超过当前组合权益的2倍。
-
-<br><br>
-
-如果剩余名义额度不足，
-新仓位自动缩小。
-
-<br><br>
-
-最大回撤按组合权益计算，
-包含持仓未实现盈亏。
-
-<br><br>
-
-回测结束时仍有持仓，
-使用正式回测最后一根15M K线收盘价平仓。
-
-<br><br>
-
-预热阶段只用于 EMA / ATR 等指标计算，
-不产生正式交易。
-
-<br><br>
-
-当前未完成月份不会进入正式回测。
-
 </div>
 
 </div>
@@ -824,6 +1035,32 @@ ATR(14) × 1.5
 
 
 <script>
+
+/* ============================================================
+ * Quant V2.4
+ *
+ * 重点：
+ *
+ * 1. 保留 V2.3 原策略
+ * 2. 增加交易生命周期诊断
+ * 3. 明确：
+ *
+ * SIGNAL
+ *   ↓
+ * PENDING
+ *   ↓
+ * SCHEDULED EXECUTION
+ *   ↓
+ * ENTRY
+ *   ↓
+ * ACTIVE
+ *   ↓
+ * STOP / TREND / END
+ *
+ * 4. 每个币种分别记录诊断
+ * 5. 记录最近事件日志
+ * ============================================================ */
+
 
 /* ============================================================
  * 回测币种
@@ -862,6 +1099,13 @@ const MAX_LEVERAGE = 2;
 const MAX_POSITIONS = 3;
 
 const ATR_MULTIPLIER = 1.5;
+
+
+/* ============================================================
+ * 日志最多保留多少条
+ * ============================================================ */
+
+const MAX_EVENT_LOGS = 80;
 
 
 /* ============================================================
@@ -918,18 +1162,6 @@ function ema(
 
 /* ============================================================
  * ATR
- *
- * Wilder RMA
- *
- * 修正：
- *
- * 第0根没有 previous close，
- * 因此不参与第一组TR平均。
- *
- * 第一组 ATR 使用：
- * TR[1] ~ TR[period]
- *
- * 后续使用 Wilder RMA。
  * ============================================================ */
 
 function atr(
@@ -1279,9 +1511,6 @@ function prepareSymbol(
 
 /* ============================================================
  * 获取当前组合市场名义
- *
- * 使用当前市场价格，
- * 而不是历史入场价格。
  * ============================================================ */
 
 function calculatePortfolioNotional(
@@ -1344,8 +1573,6 @@ function calculatePortfolioNotional(
 
 /* ============================================================
  * 当前组合权益
- *
- * cash + 所有持仓未实现盈亏
  * ============================================================ */
 
 function markEquity(
@@ -1425,15 +1652,6 @@ function markEquity(
 
 /* ============================================================
  * 创建仓位
- *
- * 重要：
- *
- * MAX_LEVERAGE 是整个组合的最大杠杆。
- *
- * remainingNotional =
- * 当前组合权益 × 2
- * -
- * 当前持仓按照当前市场价格计算的名义价值。
  * ============================================================ */
 
 function createPosition({
@@ -1505,18 +1723,10 @@ function createPosition({
   }
 
 
-  /*
-   * 整个组合最大市场名义
-   */
-
   const maxPortfolioNotional =
     equity *
     MAX_LEVERAGE;
 
-
-  /*
-   * 当前已有仓位的市场名义
-   */
 
   const remainingNotional =
     Math.max(
@@ -1526,19 +1736,10 @@ function createPosition({
     );
 
 
-  /*
-   * 当前价格下本仓位最多可以开多少数量
-   */
-
   const maxQuantity =
     remainingNotional /
     entry;
 
-
-  /*
-   * 如果理论风险仓位超过组合剩余名义，
-   * 自动缩小。
-   */
 
   if(
     quantity >
@@ -1830,10 +2031,13 @@ function portfolioBacktest(
 
       coinStats: {},
 
+      eventLog: [],
+
       diagnostics: {
 
         signals: 0,
         pendingSignals: 0,
+        scheduledExecuted: 0,
         entries: 0,
 
         signalSkippedMaxPositions: 0,
@@ -1841,6 +2045,12 @@ function portfolioBacktest(
         entrySkipped: 0,
 
         entrySkippedExisting: 0,
+
+        entrySkippedNoCandle: 0,
+
+        entrySkippedInvalid: 0,
+
+        pendingExpired: 0,
 
         stopExits: 0,
         trendExits: 0,
@@ -1936,9 +2146,9 @@ function portfolioBacktest(
 
 
   /*
-   * 下一根15M openTime
+   * pending：
    *
-   * 等待执行的信号
+   * 下一根15M开盘等待执行的订单。
    */
 
   const pending =
@@ -1961,13 +2171,27 @@ function portfolioBacktest(
 
       pendingSignals: 0,
 
+      scheduledExecuted: 0,
+
       entries: 0,
 
       trades: 0,
 
       wins: 0,
 
-      pnl: 0
+      pnl: 0,
+
+      signalSkippedMaxPositions: 0,
+
+      entrySkipped: 0,
+
+      entrySkippedExisting: 0,
+
+      entrySkippedNoCandle: 0,
+
+      entrySkippedInvalid: 0,
+
+      pendingExpired: 0
 
     };
 
@@ -1984,6 +2208,8 @@ function portfolioBacktest(
 
     pendingSignals: 0,
 
+    scheduledExecuted: 0,
+
     entries: 0,
 
     signalSkippedMaxPositions: 0,
@@ -1991,6 +2217,12 @@ function portfolioBacktest(
     entrySkipped: 0,
 
     entrySkippedExisting: 0,
+
+    entrySkippedNoCandle: 0,
+
+    entrySkippedInvalid: 0,
+
+    pendingExpired: 0,
 
     stopExits: 0,
 
@@ -2011,6 +2243,45 @@ function portfolioBacktest(
     positionSum: 0
 
   };
+
+
+  /* ==========================================================
+   * 最近事件日志
+   * ========================================================== */
+
+  const eventLog = [];
+
+
+  function logEvent(
+    type,
+    symbol,
+    time,
+    detail
+  ){
+
+    eventLog.push({
+
+      type,
+
+      symbol,
+
+      time,
+
+      detail
+
+    });
+
+
+    if(
+      eventLog.length >
+      MAX_EVENT_LOGS
+    ){
+
+      eventLog.shift();
+
+    }
+
+  }
 
 
   /* ==========================================================
@@ -2081,6 +2352,25 @@ function portfolioBacktest(
       diagnostics.endExits++;
 
     }
+
+
+    logEvent(
+
+      trade.reason,
+
+      trade.symbol,
+
+      trade.exitTime,
+
+      (
+        trade.side +
+        " exit=" +
+        trade.exit +
+        " netPnl=" +
+        trade.netPnl.toFixed(4)
+      )
+
+    );
 
   }
 
@@ -2172,8 +2462,47 @@ function portfolioBacktest(
     ){
 
       /*
+       * 已经来到执行时间。
+       */
+
+      diagnostics.scheduledExecuted++;
+
+
+      const stat =
+        coinStats[
+          signal.symbol
+        ];
+
+
+      if(
+        stat
+      ){
+
+        stat.scheduledExecuted++;
+
+      }
+
+
+      logEvent(
+
+        "EXECUTE_ATTEMPT",
+
+        signal.symbol,
+
+        time,
+
+        (
+          signal.side +
+          " signalTime=" +
+          signal.signalTime
+        )
+
+      );
+
+
+      /*
        * 如果已经满3仓，
-       * 记录为执行阶段3仓限制。
+       * 执行阶段拒绝。
        */
 
       if(
@@ -2183,13 +2512,36 @@ function portfolioBacktest(
 
         diagnostics.entrySkipped++;
 
+        if(
+          stat
+        ){
+
+          stat.entrySkipped++;
+
+        }
+
+
+        logEvent(
+
+          "ENTRY_SKIP_3POS",
+
+          signal.symbol,
+
+          time,
+
+          "positions=" +
+          positions.size
+
+        );
+
+
         continue;
 
       }
 
 
       /*
-       * 同币种已经持仓。
+       * 同币种已有仓位。
        */
 
       if(
@@ -2199,6 +2551,28 @@ function portfolioBacktest(
       ){
 
         diagnostics.entrySkippedExisting++;
+
+        if(
+          stat
+        ){
+
+          stat.entrySkippedExisting++;
+
+        }
+
+
+        logEvent(
+
+          "ENTRY_SKIP_EXISTING",
+
+          signal.symbol,
+
+          time,
+
+          "existing position"
+
+        );
+
 
         continue;
 
@@ -2214,6 +2588,30 @@ function portfolioBacktest(
       if(
         !state
       ){
+
+        diagnostics.entrySkippedInvalid++;
+
+        if(
+          stat
+        ){
+
+          stat.entrySkippedInvalid++;
+
+        }
+
+
+        logEvent(
+
+          "ENTRY_SKIP_INVALID",
+
+          signal.symbol,
+
+          time,
+
+          "state missing"
+
+        );
+
 
         continue;
 
@@ -2232,6 +2630,30 @@ function portfolioBacktest(
         !item
       ){
 
+        diagnostics.entrySkippedNoCandle++;
+
+        if(
+          stat
+        ){
+
+          stat.entrySkippedNoCandle++;
+
+        }
+
+
+        logEvent(
+
+          "ENTRY_SKIP_NO_CANDLE",
+
+          signal.symbol,
+
+          time,
+
+          "current 15M candle missing"
+
+        );
+
+
         continue;
 
       }
@@ -2243,12 +2665,6 @@ function portfolioBacktest(
 
       /*
        * 下一根15M开盘成交
-       *
-       * LONG：
-       * 开盘价 + 滑点
-       *
-       * SHORT：
-       * 开盘价 - 滑点
        */
 
       const entry =
@@ -2263,7 +2679,7 @@ function portfolioBacktest(
 
 
       /*
-       * 入场前按照当前开盘价格计算组合权益。
+       * 入场前组合权益
        */
 
       const equityForRisk =
@@ -2276,7 +2692,7 @@ function portfolioBacktest(
 
 
       /*
-       * 当前已有仓位按照当前市场价格计算名义。
+       * 当前已有仓位名义
        */
 
       const existingNotional =
@@ -2288,7 +2704,7 @@ function portfolioBacktest(
 
 
       /*
-       * 创建仓位。
+       * 创建仓位
        */
 
       const position =
@@ -2314,49 +2730,101 @@ function portfolioBacktest(
 
 
       if(
-        position
+        !position
       ){
 
-        position.entryTime =
-          time;
-
-
-        positions.set(
-          signal.symbol,
-          position
-        );
-
-
-        diagnostics.entries++;
-
-
-        diagnostics.totalRiskPct +=
-          position.riskPct;
-
-
-        diagnostics.maxRiskPct =
-          Math.max(
-            diagnostics.maxRiskPct,
-            position.riskPct
-          );
-
+        diagnostics.entrySkippedInvalid++;
 
         if(
-          coinStats[
-            signal.symbol
-          ]
+          stat
         ){
 
-          coinStats[
-            signal.symbol
-          ].entries++;
+          stat.entrySkippedInvalid++;
 
         }
 
+
+        logEvent(
+
+          "ENTRY_SKIP_INVALID",
+
+          signal.symbol,
+
+          time,
+
+          "createPosition returned null"
+
+        );
+
+
+        continue;
+
       }
+
+
+      position.entryTime =
+        time;
+
+
+      positions.set(
+        signal.symbol,
+        position
+      );
+
+
+      diagnostics.entries++;
+
+
+      diagnostics.totalRiskPct +=
+        position.riskPct;
+
+
+      diagnostics.maxRiskPct =
+        Math.max(
+          diagnostics.maxRiskPct,
+          position.riskPct
+        );
+
+
+      if(
+        stat
+      ){
+
+        stat.entries++;
+
+      }
+
+
+      logEvent(
+
+        "ENTRY",
+
+        signal.symbol,
+
+        time,
+
+        (
+          position.side +
+          " entry=" +
+          position.entry.toFixed(6) +
+          " qty=" +
+          position.quantity.toFixed(6) +
+          " risk=" +
+          (
+            position.riskPct *
+            100
+          ).toFixed(4) +
+          "%"
+        )
+
+      );
 
     }
 
+
+    /*
+     * 当前时间的 pending 已经处理完。
+     */
 
     pending.delete(
       time
@@ -2368,8 +2836,6 @@ function portfolioBacktest(
      * 第二阶段
      *
      * 当前15M内部检查止损。
-     *
-     * 止损优先。
      * ========================================================
      */
 
@@ -2687,14 +3153,6 @@ function portfolioBacktest(
      * 第四阶段
      *
      * 当前15M收盘确认新的突破。
-     *
-     * 注意：
-     *
-     * 这里如果已经满3仓，
-     * 不再产生新的 pending。
-     *
-     * 现在单独统计：
-     * signalSkippedMaxPositions
      * ========================================================
      */
 
@@ -2716,6 +3174,12 @@ function portfolioBacktest(
       const symbol =
         state.p.symbol;
 
+
+      /*
+       * 已经持仓：
+       *
+       * 本币种不再产生新的入场信号。
+       */
 
       if(
         positions.has(
@@ -2741,7 +3205,9 @@ function portfolioBacktest(
       /*
        * 当前已经达到最大持仓。
        *
-       * 这里不产生新的等待信号。
+       * 注意：
+       *
+       * 这里仍然记录“生成阶段被3仓限制跳过”。
        */
 
       if(
@@ -2750,6 +3216,20 @@ function portfolioBacktest(
       ){
 
         diagnostics.signalSkippedMaxPositions++;
+
+
+        if(
+          coinStats[
+            symbol
+          ]
+        ){
+
+          coinStats[
+            symbol
+          ].signalSkippedMaxPositions++;
+
+        }
+
 
         continue;
 
@@ -2886,6 +3366,13 @@ function portfolioBacktest(
         index + 1;
 
 
+      /*
+       * 如果下一根不在正式回测区间，
+       * 本信号不能进入实际执行队列。
+       *
+       * 这不是策略失败，而是回测边界。
+       */
+
       if(
         nextIndex >=
         state.p.endIndex
@@ -2971,9 +3458,52 @@ function portfolioBacktest(
 
 
       /*
-       * 产生pending信号。
-       *
-       * 还没有成交。
+       * ======================================================
+       * SIGNAL
+       * ======================================================
+       */
+
+      diagnostics.signals++;
+
+
+      if(
+        coinStats[
+          symbol
+        ]
+      ){
+
+        coinStats[
+          symbol
+        ].signals++;
+
+      }
+
+
+      logEvent(
+
+        "SIGNAL",
+
+        symbol,
+
+        closeTime,
+
+        (
+          side +
+          " close=" +
+          candle.close +
+          " previousHigh=" +
+          previous.high +
+          " previousLow=" +
+          previous.low
+        )
+
+      );
+
+
+      /*
+       * ======================================================
+       * PENDING
+       * ======================================================
        */
 
       if(
@@ -3008,8 +3538,6 @@ function portfolioBacktest(
         });
 
 
-      diagnostics.signals++;
-
       diagnostics.pendingSignals++;
 
 
@@ -3021,13 +3549,25 @@ function portfolioBacktest(
 
         coinStats[
           symbol
-        ].signals++;
-
-        coinStats[
-          symbol
         ].pendingSignals++;
 
       }
+
+
+      logEvent(
+
+        "PENDING",
+
+        symbol,
+
+        nextOpenTime,
+
+        (
+          side +
+          " scheduled for next 15M open"
+        )
+
+      );
 
     }
 
@@ -3156,6 +3696,69 @@ function portfolioBacktest(
 
   /*
    * ==========================================================
+   * 回测结束
+   *
+   * 处理还留在 pending 的信号。
+   * ==========================================================
+   */
+
+  let leftoverPending = 0;
+
+
+  for(
+    const list of
+    pending.values()
+  ){
+
+    leftoverPending +=
+      list.length;
+
+
+    for(
+      const signal of
+      list
+    ){
+
+      diagnostics.pendingExpired++;
+
+
+      const stat =
+        coinStats[
+          signal.symbol
+        ];
+
+
+      if(
+        stat
+      ){
+
+        stat.pendingExpired++;
+
+      }
+
+
+      logEvent(
+
+        "PENDING_EXPIRED",
+
+        signal.symbol,
+
+        signal.signalTime,
+
+        (
+          signal.side +
+          " no execution bar inside backtest"
+        )
+
+      );
+
+    }
+
+  }
+
+
+  /*
+   * ==========================================================
    * 回测结束：
    *
    * 强制平掉剩余仓位
@@ -3224,10 +3827,6 @@ function portfolioBacktest(
         last.close
       );
 
-
-    /*
-     * 这里只需要当前币种的最后价格。
-     */
 
     const exitMap =
       new Map([
@@ -3333,6 +3932,8 @@ function portfolioBacktest(
       ),
 
     coinStats,
+
+    eventLog,
 
     diagnostics
 
@@ -3569,6 +4170,381 @@ function calculateProfitFactor(
 
 
 /* ============================================================
+ * 自动诊断
+ * ============================================================ */
+
+function buildDiagnosis(
+  result
+){
+
+  const d =
+    result.diagnostics;
+
+
+  const parts = [];
+
+
+  /*
+   * 没信号
+   */
+
+  if(
+    d.signals === 0
+  ){
+
+    parts.push(
+      "没有产生任何突破信号。需要检查突破条件、4H/1H/15M趋势过滤或数据区间。"
+    );
+
+  }
+
+
+  /*
+   * 信号 → pending
+   */
+
+  if(
+    d.signals > 0 &&
+    d.pendingSignals === d.signals
+  ){
+
+    parts.push(
+      "① 信号链正常：产生的突破信号全部进入等待队列。"
+    );
+
+  }
+
+
+  /*
+   * pending 不等于 signals
+   */
+
+  if(
+    d.pendingSignals <
+    d.signals
+  ){
+
+    parts.push(
+      "① 有部分信号没有进入等待队列，需要检查回测边界或信号调度逻辑。"
+    );
+
+  }
+
+
+  /*
+   * pending → execute
+   */
+
+  if(
+    d.pendingSignals > 0 &&
+    d.scheduledExecuted <
+    d.pendingSignals
+  ){
+
+    parts.push(
+      "② 有等待信号没有到达执行事件，通常需要检查回测结束边界。"
+    );
+
+  }
+
+
+  /*
+   * 执行 → 入场
+   */
+
+  if(
+    d.scheduledExecuted > 0 &&
+    d.entries <
+    d.scheduledExecuted
+  ){
+
+    parts.push(
+      "③ 有执行事件没有形成实际入场。重点查看：3仓限制、同币种持仓、无K线或无效仓位。"
+    );
+
+  }
+
+
+  /*
+   * 3仓生成阶段
+   */
+
+  if(
+    d.signalSkippedMaxPositions > 0
+  ){
+
+    parts.push(
+      "④ 部分潜在信号在生成阶段遇到3仓限制。"
+    );
+
+  }
+
+
+  /*
+   * 3仓执行阶段
+   */
+
+  if(
+    d.entrySkipped > 0
+  ){
+
+    parts.push(
+      "⑤ 部分已经进入等待队列的信号，在执行时遇到3仓限制。"
+    );
+
+  }
+
+
+  /*
+   * 同币种
+   */
+
+  if(
+    d.entrySkippedExisting > 0
+  ){
+
+    parts.push(
+      "⑥ 部分执行事件因为同币种已有仓位而被跳过。"
+    );
+
+  }
+
+
+  /*
+   * 无效仓位
+   */
+
+  if(
+    d.entrySkippedInvalid > 0
+  ){
+
+    parts.push(
+      "⑦ 部分执行事件没有形成有效仓位，需要重点检查仓位计算。"
+    );
+
+  }
+
+
+  /*
+   * 没有交易
+   */
+
+  if(
+    d.entries === 0 &&
+    d.signals > 0
+  ){
+
+    parts.push(
+      "⚠️ 有信号但没有实际入场，这正是本次V2.4最需要定位的问题。"
+    );
+
+  }
+
+
+  /*
+   * 交易正常
+   */
+
+  if(
+    d.entries > 0
+  ){
+
+    parts.push(
+      "当前已经存在实际成交，下一步重点观察成交数量与信号数量之间的损失比例。"
+    );
+
+  }
+
+
+  return parts.join(
+    "<br><br>"
+  );
+
+}
+
+
+/* ============================================================
+ * 显示事件日志
+ * ============================================================ */
+
+function displayEventLog(
+  eventLog
+){
+
+  const box =
+    document.getElementById(
+      "eventLog"
+    );
+
+
+  box.innerHTML =
+    "";
+
+
+  if(
+    !eventLog.length
+  ){
+
+    box.innerHTML =
+      '<div class="log-line">没有事件日志</div>';
+
+    return;
+
+  }
+
+
+  for(
+    const event of
+    eventLog
+  ){
+
+    const line =
+      document.createElement(
+        "div"
+      );
+
+
+    line.className =
+      "log-line";
+
+
+    const date =
+      new Date(
+        event.time
+      );
+
+
+    const timestamp =
+      Number.isNaN(
+        date.getTime()
+      )
+
+        ? String(
+            event.time
+          )
+
+        : date.toISOString();
+
+
+    line.textContent =
+      "[" +
+      timestamp +
+      "] " +
+      event.type +
+      " · " +
+      event.symbol +
+      " · " +
+      event.detail;
+
+
+    box.appendChild(
+      line
+    );
+
+  }
+
+}
+
+
+/* ============================================================
+ * 显示币种诊断表
+ * ============================================================ */
+
+function displayDiagnosticTable(
+  result
+){
+
+  const tbody =
+    document.getElementById(
+      "diagnosticTable"
+    );
+
+
+  tbody.innerHTML =
+    "";
+
+
+  for(
+    const symbol of
+    symbols
+  ){
+
+    const stat =
+      result.coinStats[
+        symbol
+      ];
+
+
+    const tr =
+      document.createElement(
+        "tr"
+      );
+
+
+    if(
+      !stat
+    ){
+
+      tr.innerHTML =
+        "<td>" +
+        symbol +
+        "</td>" +
+        "<td colspan='7'>数据失败</td>";
+
+      tbody.appendChild(
+        tr
+      );
+
+      continue;
+
+    }
+
+
+    tr.innerHTML =
+
+      "<td>" +
+      symbol +
+      "</td>" +
+
+      "<td>" +
+      stat.signals +
+      "</td>" +
+
+      "<td>" +
+      stat.pendingSignals +
+      "</td>" +
+
+      "<td>" +
+      stat.scheduledExecuted +
+      "</td>" +
+
+      "<td>" +
+      stat.entries +
+      "</td>" +
+
+      "<td>" +
+      stat.signalSkippedMaxPositions +
+      "</td>" +
+
+      "<td>" +
+      stat.entrySkippedExisting +
+      "</td>" +
+
+      "<td>" +
+      stat.trades +
+      "</td>";
+
+
+    tbody.appendChild(
+      tr
+    );
+
+  }
+
+}
+
+
+/* ============================================================
  * 显示最终结果
  * ============================================================ */
 
@@ -3797,78 +4773,112 @@ function displayResult(
 
   /*
    * ========================================================
-   * 回测诊断
+   * 交易级诊断
    * ========================================================
    */
+
+  const d =
+    result.diagnostics;
+
 
   document.getElementById(
     "signals"
   ).textContent =
-    result.diagnostics.signals;
+    d.signals;
 
 
   document.getElementById(
     "pendingSignals"
   ).textContent =
-    result.diagnostics.pendingSignals;
+    d.pendingSignals;
+
+
+  document.getElementById(
+    "scheduledExecuted"
+  ).textContent =
+    d.scheduledExecuted;
 
 
   document.getElementById(
     "entries"
   ).textContent =
-    result.diagnostics.entries;
+    d.entries;
 
 
   document.getElementById(
     "signalSkippedMaxPositions"
   ).textContent =
-    result.diagnostics.signalSkippedMaxPositions;
+    d.signalSkippedMaxPositions;
 
 
   document.getElementById(
     "entrySkipped"
   ).textContent =
-    result.diagnostics.entrySkipped;
+    d.entrySkipped;
 
 
   document.getElementById(
     "entrySkippedExisting"
   ).textContent =
-    result.diagnostics.entrySkippedExisting;
+    d.entrySkippedExisting;
 
+
+  document.getElementById(
+    "entrySkippedNoCandle"
+  ).textContent =
+    d.entrySkippedNoCandle;
+
+
+  document.getElementById(
+    "entrySkippedInvalid"
+  ).textContent =
+    d.entrySkippedInvalid;
+
+
+  document.getElementById(
+    "pendingExpired"
+  ).textContent =
+    d.pendingExpired;
+
+
+  /*
+   * ========================================================
+   * 平仓
+   * ========================================================
+   */
 
   document.getElementById(
     "stopExits"
   ).textContent =
-    result.diagnostics.stopExits;
+    d.stopExits;
 
 
   document.getElementById(
     "trendExits"
   ).textContent =
-    result.diagnostics.trendExits;
+    d.trendExits;
 
 
   document.getElementById(
     "endExits"
   ).textContent =
-    result.diagnostics.endExits;
+    d.endExits;
 
 
   /*
    * ========================================================
-   * 风险诊断
+   * 风险
    * ========================================================
    */
 
   const entries =
-    result.diagnostics.entries;
+    d.entries;
 
 
   const avgRisk =
     entries > 0
 
-      ? result.diagnostics.totalRiskPct /
+      ? d.totalRiskPct /
         entries
 
       : 0;
@@ -3886,18 +4896,14 @@ function displayResult(
     "maxRisk"
   ).textContent =
     pct(
-      result.diagnostics.maxRiskPct
+      d.maxRiskPct
     );
 
-
-  /*
-   * 最大组合名义
-   */
 
   document.getElementById(
     "maxPortfolioNotional"
   ).textContent =
-    result.diagnostics.maxPortfolioNotional.toLocaleString(
+    d.maxPortfolioNotional.toLocaleString(
       undefined,
       {
 
@@ -3912,26 +4918,18 @@ function displayResult(
     " USDT";
 
 
-  /*
-   * 最大组合杠杆
-   */
-
   document.getElementById(
     "maxPortfolioLeverage"
   ).textContent =
-    result.diagnostics.maxPortfolioLeverage.toFixed(2) +
+    d.maxPortfolioLeverage.toFixed(2) +
     "×";
 
 
-  /*
-   * 平均持仓
-   */
-
   const avgPositions =
-    result.diagnostics.positionSamples > 0
+    d.positionSamples > 0
 
-      ? result.diagnostics.positionSum /
-        result.diagnostics.positionSamples
+      ? d.positionSum /
+        d.positionSamples
 
       : 0;
 
@@ -3943,7 +4941,9 @@ function displayResult(
 
 
   /*
+   * ========================================================
    * 日期
+   * ========================================================
    */
 
   const startText =
@@ -3999,6 +4999,36 @@ function displayResult(
     totalSymbols +
 
     " 个币种";
+
+
+  /*
+   * 自动诊断
+   */
+
+  document.getElementById(
+    "diagnosis"
+  ).innerHTML =
+    buildDiagnosis(
+      result
+    );
+
+
+  /*
+   * 事件日志
+   */
+
+  displayEventLog(
+    result.eventLog
+  );
+
+
+  /*
+   * 币种诊断
+   */
+
+  displayDiagnosticTable(
+    result
+  );
 
 }
 
@@ -4073,11 +5103,15 @@ async function run(){
 
     "signals",
     "pendingSignals",
+    "scheduledExecuted",
     "entries",
 
     "signalSkippedMaxPositions",
     "entrySkipped",
     "entrySkippedExisting",
+    "entrySkippedNoCandle",
+    "entrySkippedInvalid",
+    "pendingExpired",
 
     "stopExits",
     "trendExits",
@@ -4116,6 +5150,30 @@ async function run(){
   ).textContent =
     "0/" +
     symbols.length;
+
+
+  document.getElementById(
+    "diagnosis"
+  ).innerHTML =
+    "回测进行中……";
+
+
+  document.getElementById(
+    "diagnosticTable"
+  ).innerHTML =
+
+    "<tr>" +
+    "<td colspan='8'>回测进行中……</td>" +
+    "</tr>";
+
+
+  document.getElementById(
+    "eventLog"
+  ).innerHTML =
+
+    '<div class="log-line">' +
+    "回测进行中……" +
+    "</div>";
 
 
   /*
@@ -4276,6 +5334,12 @@ async function run(){
       "没有任何币种读取成功";
 
 
+    document.getElementById(
+      "diagnosis"
+    ).innerHTML =
+      "没有任何币种读取成功，请检查 /api/market 数据接口。";
+
+
     button.disabled =
       false;
 
@@ -4296,7 +5360,7 @@ async function run(){
    */
 
   status.textContent =
-    "数据读取完成，正在进行组合事件同步回测……";
+    "数据读取完成，正在进行 V2.4 交易级事件同步回测……";
 
 
   progress.style.width =
@@ -4365,6 +5429,9 @@ async function run(){
 
       " · 等待 " +
       stat.pendingSignals +
+
+      " · 执行 " +
+      stat.scheduledExecuted +
 
       " · 入场 " +
       stat.entries +
