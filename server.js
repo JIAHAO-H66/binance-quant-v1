@@ -13,8 +13,8 @@ app.use(express.static(__dirname));
  *
  * Binance USD-M Futures
  *
- * 数据来源：
- * https://data.binance.vision
+ * 数据：
+ * Binance Public Data
  *
  * 正式回测：
  * 最近 6 个完整月份
@@ -22,16 +22,28 @@ app.use(express.static(__dirname));
  * 指标预热：
  * 额外 2 个月
  *
- * 注意：
- *
- * 预热数据只用于计算 EMA / ATR 等指标，
- * 不允许在预热期间产生交易。
- *
+ * 不下单
+ * 只做历史回测
  * ============================================================
+ */
+
+
+/*
+ * Binance Vision
  */
 
 const BINANCE_DATA_BASE =
   "https://data.binance.vision";
+
+
+/*
+ * Binance Futures API
+ *
+ * 用于获取历史资金费率
+ */
+
+const BINANCE_FAPI_BASE =
+  "https://fapi.binance.com";
 
 
 /*
@@ -58,14 +70,13 @@ const cache = new Map();
  * ============================================================
  * 当前月份开始时间
  *
- * 例如当前月份：
+ * 例如：
  *
- * 2026-09
+ * 2026-09-26
  *
- * 返回：
+ * 当前月份开始：
  *
- * 2026-09-01 00:00:00 UTC
- *
+ * 2026-09-01 00:00 UTC
  * ============================================================
  */
 
@@ -85,21 +96,16 @@ function getCurrentMonthStart(){
 
 /*
  * ============================================================
- * 正式回测开始时间
+ * 正式回测开始
  *
- * 当前月份往前 6 个完整月份。
+ * 当前月份往前 6 个完整月份
  *
- * 例如：
- *
- * 当前：
  * 2026-09
  *
  * 正式回测：
  *
  * 2026-03-01
- *
- * 到：
- *
+ * →
  * 2026-09-01
  *
  * ============================================================
@@ -121,26 +127,20 @@ function getBacktestStart(){
 
 /*
  * ============================================================
- * 数据开始时间
+ * 数据开始
  *
- * 正式回测开始之前，
- * 再额外提供 2 个月指标预热。
+ * 正式回测之前
+ * 再额外取 2 个月预热
  *
- * 例如：
+ * 2026-03
  *
- * 正式回测：
+ * 回测：
  *
- * 2026-03-01
+ * 2026-03 → 2026-09
  *
  * 预热：
  *
- * 2026-01-01
- *
- * 所以数据从：
- *
- * 2026-01-01
- *
- * 开始。
+ * 2026-01 → 2026-03
  *
  * ============================================================
  */
@@ -152,9 +152,9 @@ function getDataStart(){
 
   return Date.UTC(
     now.getUTCFullYear(),
-    now.getUTCMonth()
-      - BACKTEST_MONTHS
-      - WARMUP_MONTHS,
+    now.getUTCMonth() -
+      BACKTEST_MONTHS -
+      WARMUP_MONTHS,
     1
   );
 
@@ -163,14 +163,10 @@ function getDataStart(){
 
 /*
  * ============================================================
- * 根据 offset 获取月份
+ * 月份信息
  *
- * offset = 0
- * 当前月份
- *
- * offset = 1
- * 上个月
- *
+ * offset 0 = 当前月
+ * offset 1 = 上个月
  * ============================================================
  */
 
@@ -178,7 +174,6 @@ function getMonthInfo(offset){
 
   const now =
     new Date();
-
 
   const date =
     new Date(
@@ -188,7 +183,6 @@ function getMonthInfo(offset){
         1
       )
     );
-
 
   return {
 
@@ -207,11 +201,11 @@ function getMonthInfo(offset){
 
 /*
  * ============================================================
- * 构造 Binance 月度 K线 URL
+ * Binance K线 URL
  * ============================================================
  */
 
-function buildUrl(
+function buildKlineUrl(
   symbol,
   interval,
   year,
@@ -220,7 +214,6 @@ function buildUrl(
 
   const fileName =
     `${symbol}-${interval}-${year}-${month}.zip`;
-
 
   return (
     BINANCE_DATA_BASE +
@@ -248,7 +241,6 @@ function parseCsv(text){
       .trim()
       .split(/\r?\n/);
 
-
   const result = [];
 
 
@@ -270,18 +262,6 @@ function parseCsv(text){
       line.split(",");
 
 
-    /*
-     * Binance CSV：
-     *
-     * 0 open time
-     * 1 open
-     * 2 high
-     * 3 low
-     * 4 close
-     * 5 volume
-     * 6 close time
-     */
-
     const openTime =
       Number(row[0]);
 
@@ -291,7 +271,9 @@ function parseCsv(text){
      */
 
     if(
-      !Number.isFinite(openTime)
+      !Number.isFinite(
+        openTime
+      )
     ){
 
       continue;
@@ -360,7 +342,7 @@ function parseCsv(text){
 
 /*
  * ============================================================
- * 解压 Binance ZIP
+ * 解压 ZIP
  * ============================================================
  */
 
@@ -406,7 +388,7 @@ function extractZipCsv(buffer){
 
 /*
  * ============================================================
- * 下载一个月数据
+ * 下载一个月 K线
  * ============================================================
  */
 
@@ -418,7 +400,7 @@ async function downloadMonth(
 ){
 
   const url =
-    buildUrl(
+    buildKlineUrl(
       symbol,
       interval,
       year,
@@ -437,8 +419,8 @@ async function downloadMonth(
 
 
   /*
-   * 该币种当时还没有上市，
-   * 或 Binance 没有这个月份的数据。
+   * 币种尚未上市
+   * 或该月没有文件
    */
 
   if(
@@ -452,7 +434,6 @@ async function downloadMonth(
       year,
       month
     );
-
 
     return [];
 
@@ -485,17 +466,6 @@ async function downloadMonth(
 /*
  * ============================================================
  * 获取历史 K线
- *
- * 返回的数据包括：
- *
- * 预热：
- * 2个月
- *
- * 正式回测：
- * 6个月
- *
- * 但是前端只允许正式回测区间产生交易。
- *
  * ============================================================
  */
 
@@ -507,10 +477,6 @@ async function fetchHistoricalKlines(
   const cacheKey =
     `${symbol}_${interval}`;
 
-
-  /*
-   * 已经缓存
-   */
 
   if(
     cache.has(cacheKey)
@@ -529,16 +495,6 @@ async function fetchHistoricalKlines(
     getCurrentMonthStart();
 
 
-  /*
-   * 总月份：
-   *
-   * 6个月正式回测
-   * +
-   * 2个月预热
-   *
-   * = 8个月
-   */
-
   const totalMonths =
     BACKTEST_MONTHS +
     WARMUP_MONTHS;
@@ -548,9 +504,23 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 从上个月开始向过去读取。
+   * 当前月份不下载
    *
-   * 当前未完成月份不读取。
+   * 只下载：
+   *
+   * 上个月
+   * 往前 totalMonths 个月
+   *
+   * 例如：
+   *
+   * 2026-08
+   * 07
+   * 06
+   * 05
+   * 04
+   * 03
+   * 02
+   * 01
    */
 
   for(
@@ -588,11 +558,6 @@ async function fetchHistoricalKlines(
 
     }catch(error){
 
-      /*
-       * 单个月份下载失败，
-       * 不影响其它月份。
-       */
-
       console.error(
         "Month download error:",
         error.message
@@ -604,9 +569,7 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * ==========================================================
    * 排序
-   * ==========================================================
    */
 
   all.sort(
@@ -617,9 +580,7 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * ==========================================================
    * 去重
-   * ==========================================================
    */
 
   const unique = [];
@@ -648,22 +609,21 @@ async function fetchHistoricalKlines(
     );
 
 
-    unique.push(
-      row
-    );
+    unique.push(row);
 
   }
 
 
   /*
-   * ==========================================================
-   * 最终时间范围
+   * 只保留：
    *
-   * 必须满足：
+   * 预热开始
    *
-   * dataStart <= K线 < currentMonthStart
+   * →
    *
-   * ==========================================================
+   * 正式回测结束
+   *
+   * 当前月份开始之前
    */
 
   const result =
@@ -673,10 +633,6 @@ async function fetchHistoricalKlines(
         row.openTime < currentMonthStart
     );
 
-
-  /*
-   * 没有数据
-   */
 
   if(
     result.length === 0
@@ -688,10 +644,6 @@ async function fetchHistoricalKlines(
 
   }
 
-
-  /*
-   * 缓存
-   */
 
   cache.set(
     cacheKey,
@@ -712,10 +664,171 @@ async function fetchHistoricalKlines(
 
 /*
  * ============================================================
+ * 历史资金费率
+ *
+ * Binance Futures：
+ *
+ * fundingRate
+ *
+ * 每 8 小时左右一次
+ * ============================================================
+ */
+
+async function fetchFundingRates(
+  symbol
+){
+
+  const cacheKey =
+    `${symbol}_funding`;
+
+
+  if(
+    cache.has(cacheKey)
+  ){
+
+    return cache.get(
+      cacheKey
+    );
+
+  }
+
+
+  const startTime =
+    getBacktestStart();
+
+
+  const endTime =
+    getCurrentMonthStart();
+
+
+  const url =
+    BINANCE_FAPI_BASE +
+    "/fapi/v1/fundingRate" +
+    `?symbol=${encodeURIComponent(symbol)}` +
+    `&startTime=${startTime}` +
+    `&endTime=${endTime}` +
+    `&limit=1000`;
+
+
+  console.log(
+    "Funding:",
+    symbol
+  );
+
+
+  try{
+
+    const response =
+      await fetch(url);
+
+
+    if(
+      !response.ok
+    ){
+
+      throw new Error(
+        `Funding HTTP ${response.status}`
+      );
+
+    }
+
+
+    const json =
+      await response.json();
+
+
+    if(
+      !Array.isArray(json)
+    ){
+
+      throw new Error(
+        "Funding 返回格式错误"
+      );
+
+    }
+
+
+    const result =
+      json
+        .map(
+          item => ({
+
+            fundingTime:
+              Number(
+                item.fundingTime
+              ),
+
+            fundingRate:
+              Number(
+                item.fundingRate
+              )
+
+          })
+        )
+        .filter(
+          item =>
+            Number.isFinite(
+              item.fundingTime
+            ) &&
+            Number.isFinite(
+              item.fundingRate
+            )
+        );
+
+
+    cache.set(
+      cacheKey,
+      result
+    );
+
+
+    console.log(
+      `${symbol} funding: ` +
+      `${result.length}`
+    );
+
+
+    return result;
+
+  }catch(error){
+
+    /*
+     * 资金费率获取失败时，
+     * 不让整个币种回测直接失败。
+     *
+     * UI 会显示：
+     *
+     * 资金费率数据不可用
+     */
+
+    console.error(
+      "Funding error:",
+      symbol,
+      error.message
+    );
+
+
+    const result = [];
+
+
+    cache.set(
+      cacheKey,
+      result
+    );
+
+
+    return result;
+
+  }
+
+}
+
+
+/*
+ * ============================================================
  * 行情接口
  *
  * /api/market?symbol=SOLUSDT
- *
  * ============================================================
  */
 
@@ -733,10 +846,6 @@ app.get(
           req.query.symbol || ""
         ).toUpperCase();
 
-
-      /*
-       * 基础 symbol 验证
-       */
 
       if(
         !/^[A-Z0-9]{5,20}$/.test(
@@ -764,14 +873,11 @@ app.get(
       );
 
 
-      /*
-       * 同时下载三个周期
-       */
-
       const [
         data4h,
         data1h,
-        data15m
+        data15m,
+        funding
       ] =
         await Promise.all([
 
@@ -788,14 +894,14 @@ app.get(
           fetchHistoricalKlines(
             symbol,
             "15m"
+          ),
+
+          fetchFundingRates(
+            symbol
           )
 
         ]);
 
-
-      /*
-       * 返回
-       */
 
       return res.json({
 
@@ -805,56 +911,27 @@ app.get(
 
         meta:{
 
-          /*
-           * 正式回测月份
-           */
-
           backtestMonths:
             BACKTEST_MONTHS,
-
-
-          /*
-           * 预热月份
-           */
 
           warmupMonths:
             WARMUP_MONTHS,
 
-
-          /*
-           * 正式回测开始
-           */
-
           backtestStart:
             getBacktestStart(),
-
-
-          /*
-           * 正式回测结束
-           */
 
           backtestEnd:
             getCurrentMonthStart(),
 
+          backtestStartISO:
+            new Date(
+              getBacktestStart()
+            ).toISOString(),
 
-          /*
-           * 数据开始
-           */
-
-          dataStart:
-            getDataStart(),
-
-          /*
-           * 明确告诉前端：
-           *
-           * 这个区间才允许交易
-           */
-
-          tradingStart:
-            getBacktestStart(),
-
-          tradingEnd:
-            getCurrentMonthStart()
+          backtestEndISO:
+            new Date(
+              getCurrentMonthStart()
+            ).toISOString()
 
         },
 
@@ -869,7 +946,9 @@ app.get(
           "15m":
             data15m
 
-        }
+        },
+
+        funding
 
       });
 
@@ -931,7 +1010,7 @@ app.get(
 
 /*
  * ============================================================
- * 状态接口
+ * 状态
  * ============================================================
  */
 
@@ -952,67 +1031,27 @@ app.get(
       market:
         "USD-M Futures",
 
-
-      /*
-       * 正式回测
-       */
-
       backtestMonths:
         BACKTEST_MONTHS,
 
-
-      /*
-       * 指标预热
-       */
-
       warmupMonths:
         WARMUP_MONTHS,
-
-
-      /*
-       * 正式回测开始
-       */
 
       backtestStart:
         new Date(
           getBacktestStart()
         ).toISOString(),
 
-
-      /*
-       * 正式回测结束
-       */
-
       backtestEnd:
         new Date(
           getCurrentMonthStart()
         ).toISOString(),
-
-
-      /*
-       * 数据开始
-       */
-
-      dataStart:
-        new Date(
-          getDataStart()
-        ).toISOString(),
-
-
-      /*
-       * 周期
-       */
 
       intervals:[
         "4h",
         "1h",
         "15m"
       ],
-
-
-      /*
-       * 当前缓存数量
-       */
 
       cacheSize:
         cache.size
