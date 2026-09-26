@@ -3,10 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quant V2.1 · 山寨币合约回测</title>
+<title>Quant V2.2 · 山寨币合约回测</title>
 
 <style>
-*{box-sizing:border-box}
+*{
+  box-sizing:border-box
+}
 
 body{
   margin:0;
@@ -151,6 +153,7 @@ pre{
 }
 
 @media(max-width:500px){
+
   .wrap{
     padding:12px;
   }
@@ -162,6 +165,7 @@ pre{
   .coin{
     font-size:14px;
   }
+
 }
 </style>
 </head>
@@ -177,7 +181,7 @@ pre{
 <div class="card">
 
 <h1>
-Quant V2.1 · 山寨币合约回测
+Quant V2.2 · 山寨币合约回测
 </h1>
 
 <div class="muted">
@@ -352,6 +356,8 @@ Profit Factor
 如果突破信号 > 0，但实际入场 = 0，
 说明信号调度仍有问题。
 
+<br><br>
+
 如果突破信号 > 0、实际入场 > 0，
 说明事件链已经真正跑起来，可以继续判断策略本身的交易结果。
 
@@ -418,14 +424,14 @@ Profit Factor
 <div class="metric">
 
 <div class="m">
-单笔风险
+单笔目标风险
 <div class="v">
 0.50%
 </div>
 </div>
 
 <div class="m">
-最大杠杆
+组合最大杠杆
 <div class="v">
 2×
 </div>
@@ -462,11 +468,90 @@ Profit Factor
 
 <br>
 
-单个仓位名义价值不超过当前组合权益的2倍。
+整个组合的总名义价值不超过当前组合权益的
+<b>2倍</b>。
+
+<br>
+
+如果达到组合2×名义价值限制，
+新仓位会自动缩小。
 
 <br>
 
 手续费和滑点计入交易结果。
+
+</div>
+
+</div>
+
+
+<!-- ========================================================= -->
+<!-- 风险诊断 -->
+<!-- ========================================================= -->
+
+<div class="card">
+
+<h2>
+风险诊断
+</h2>
+
+<div class="metric">
+
+<div class="m">
+平均实际风险
+<div class="v" id="avgRisk">
+—
+</div>
+</div>
+
+<div class="m">
+最大实际风险
+<div class="v" id="maxRisk">
+—
+</div>
+</div>
+
+<div class="m">
+最大组合名义
+<div class="v" id="maxPortfolioNotional">
+—
+</div>
+</div>
+
+<div class="m">
+平均持仓数
+<div class="v" id="avgPositions">
+—
+</div>
+</div>
+
+</div>
+
+<div class="note">
+
+平均实际风险：
+
+所有实际成交仓位的风险占入场时组合权益比例的平均值。
+
+<br><br>
+
+最大实际风险：
+
+所有实际成交仓位中最高的实际风险比例。
+
+<br><br>
+
+最大组合名义：
+
+回测过程中同时持有仓位时，
+组合所有仓位名义价值之和的最高值。
+
+<br><br>
+
+平均持仓数：
+
+整个正式回测期间，
+每个15M时间点平均持有多少个仓位。
 
 </div>
 
@@ -528,10 +613,10 @@ ATR(14) × 1.5
 
 多空双向
 
-单笔风险：
+单笔风险目标：
 当前组合权益 × 0.50%
 
-最大杠杆：
+组合最大杠杆：
 2×
 
 最大同时持仓：
@@ -576,15 +661,58 @@ ATR(14) × 1.5
 
 <br><br>
 
-止损按当前K线高低点检查。
-
-<br><br>
-
 止损优先于趋势退出。
 
 <br><br>
 
-最大回撤按组合权益计算，包含持仓未实现盈亏。
+趋势退出规则：
+
+<br>
+
+多单：
+
+4H 转为空头方向时退出；
+
+或者 1H 与 15M 同时转为空头时退出。
+
+<br><br>
+
+空单：
+
+4H 转为多头方向时退出；
+
+或者 1H 与 15M 同时转为多头时退出。
+
+<br><br>
+
+因此，单独15M EMA20 / EMA50反转，
+不会立即强制平仓。
+
+<br><br>
+
+仓位计算：
+
+<br>
+
+首先按照单笔0.50%风险计算理论仓位。
+
+<br>
+
+然后检查组合剩余可用名义价值。
+
+<br>
+
+整个组合所有持仓名义价值总和不得超过当前组合权益的2倍。
+
+<br><br>
+
+如果剩余名义额度不足，
+新仓位自动缩小。
+
+<br><br>
+
+最大回撤按组合权益计算，
+包含持仓未实现盈亏。
 
 <br><br>
 
@@ -593,7 +721,8 @@ ATR(14) × 1.5
 
 <br><br>
 
-预热阶段只用于 EMA / ATR 等指标计算，不产生正式交易。
+预热阶段只用于 EMA / ATR 等指标计算，
+不产生正式交易。
 
 <br><br>
 
@@ -1044,6 +1173,14 @@ function prepareSymbol(
 
 /* ============================================================
  * 创建仓位
+ *
+ * 重要：
+ *
+ * 现在 MAX_LEVERAGE 是“整个组合”的最大杠杆，
+ * 不是每一个仓位单独2倍。
+ *
+ * existingNotional =
+ * 当前已经存在仓位的总名义价值。
  * ============================================================ */
 
 function createPosition({
@@ -1052,7 +1189,8 @@ function createPosition({
   side,
   entry,
   stopDistance,
-  equity
+  equity,
+  existingNotional = 0
 
 }){
 
@@ -1075,21 +1213,52 @@ function createPosition({
 
   }
 
-  const maxNotional =
+
+  /*
+   * 整个组合最大名义价值
+   */
+
+  const maxPortfolioNotional =
     equity *
     MAX_LEVERAGE;
 
+
+  /*
+   * 当前组合已经占用的名义价值
+   */
+
+  const remainingNotional =
+    Math.max(
+      0,
+      maxPortfolioNotional -
+      existingNotional
+    );
+
+
+  /*
+   * 本次最多还能开的数量
+   */
+
+  const maxQuantity =
+    remainingNotional /
+    entry;
+
+
+  /*
+   * 如果风险仓位超过剩余名义额度，
+   * 自动缩小。
+   */
+
   if(
-    quantity *
-    entry >
-    maxNotional
+    quantity >
+    maxQuantity
   ){
 
     quantity =
-      maxNotional /
-      entry;
+      maxQuantity;
 
   }
+
 
   if(
     !Number.isFinite(
@@ -1102,6 +1271,7 @@ function createPosition({
 
   }
 
+
   const notional =
     quantity *
     entry;
@@ -1109,6 +1279,7 @@ function createPosition({
   const actualRisk =
     quantity *
     stopDistance;
+
 
   return {
 
@@ -1212,6 +1383,7 @@ function closePosition(
 
   }
 
+
   const entryNotional =
     position.quantity *
     position.entry;
@@ -1220,6 +1392,7 @@ function closePosition(
     position.quantity *
     exit;
 
+
   const feeCost =
     (
       entryNotional +
@@ -1227,9 +1400,11 @@ function closePosition(
     ) *
     FEE;
 
+
   const netPnl =
     pnl -
     feeCost;
+
 
   return {
 
@@ -1367,17 +1542,17 @@ function portfolioBacktest(
    * ==========================================================
    * 统一时间轴
    *
-   * 这里使用 15M openTime。
+   * 使用15M openTime。
    *
    * 每个时间点代表：
    *
    * “这一根15M K线开盘”
-   *
    * ==========================================================
    */
 
   const timeSet =
     new Set();
+
 
   for(
     const p of prepared
@@ -1409,6 +1584,7 @@ function portfolioBacktest(
 
   }
 
+
   const times =
     Array.from(
       timeSet
@@ -1416,6 +1592,7 @@ function portfolioBacktest(
       (a,b) =>
         a - b
     );
+
 
   if(
     !times.length
@@ -1444,7 +1621,13 @@ function portfolioBacktest(
         entrySkipped: 0,
         stopExits: 0,
         trendExits: 0,
-        endExits: 0
+        endExits: 0,
+
+        totalRiskPct: 0,
+        maxRiskPct: 0,
+        maxPortfolioNotional: 0,
+        positionSamples: 0,
+        positionSum: 0
 
       }
 
@@ -1460,12 +1643,14 @@ function portfolioBacktest(
   const states =
     new Map();
 
+
   for(
     const p of prepared
   ){
 
     const indexMap =
       new Map();
+
 
     for(
       let i = p.startIndex;
@@ -1480,6 +1665,7 @@ function portfolioBacktest(
 
     }
 
+
     states.set(
       p.symbol,
       {
@@ -1489,6 +1675,7 @@ function portfolioBacktest(
         indexMap
 
       }
+
     );
 
   }
@@ -1501,20 +1688,26 @@ function portfolioBacktest(
   let cash =
     INITIAL_CAPITAL;
 
+
   let peakEquity =
     INITIAL_CAPITAL;
+
 
   let maxDrawdown =
     0;
 
+
   const positions =
     new Map();
+
 
   const trades =
     [];
 
+
   const equityCurve =
     [];
+
 
   /*
    * key = 下一根15M的openTime
@@ -1525,8 +1718,10 @@ function portfolioBacktest(
   const pending =
     new Map();
 
+
   const coinStats =
     {};
+
 
   for(
     const p of prepared
@@ -1567,7 +1762,17 @@ function portfolioBacktest(
 
     trendExits: 0,
 
-    endExits: 0
+    endExits: 0,
+
+    totalRiskPct: 0,
+
+    maxRiskPct: 0,
+
+    maxPortfolioNotional: 0,
+
+    positionSamples: 0,
+
+    positionSum: 0
 
   };
 
@@ -1584,10 +1789,12 @@ function portfolioBacktest(
       trade
     );
 
+
     const stat =
       coinStats[
         trade.symbol
       ];
+
 
     if(
       stat
@@ -1597,6 +1804,7 @@ function portfolioBacktest(
 
       stat.pnl +=
         trade.netPnl;
+
 
       if(
         trade.netPnl > 0
@@ -1608,6 +1816,7 @@ function portfolioBacktest(
 
     }
 
+
     if(
       trade.reason ===
       "STOP"
@@ -1617,6 +1826,7 @@ function portfolioBacktest(
 
     }
 
+
     if(
       trade.reason ===
       "TREND"
@@ -1625,6 +1835,7 @@ function portfolioBacktest(
       diagnostics.trendExits++;
 
     }
+
 
     if(
       trade.reason ===
@@ -1648,15 +1859,17 @@ function portfolioBacktest(
 
     /*
      * --------------------------------------------------------
-     * 找出当前时间对应的所有15M K线
+     * 当前时间对应的所有15M K线
      * --------------------------------------------------------
      */
 
     const currentCandles =
       [];
 
+
     const candlesBySymbol =
       new Map();
+
 
     for(
       const state of
@@ -1668,6 +1881,7 @@ function portfolioBacktest(
           time
         );
 
+
       if(
         index === undefined
       ){
@@ -1676,8 +1890,10 @@ function portfolioBacktest(
 
       }
 
+
       const candle =
         state.p.data15m[index];
+
 
       currentCandles.push({
 
@@ -1688,6 +1904,7 @@ function portfolioBacktest(
         candle
 
       });
+
 
       candlesBySymbol.set(
         state.p.symbol,
@@ -1704,7 +1921,6 @@ function portfolioBacktest(
      * 当前15M开盘：
      *
      * 执行上一根15M收盘产生的信号。
-     *
      * ========================================================
      */
 
@@ -1735,8 +1951,9 @@ function portfolioBacktest(
 
       }
 
+
       /*
-       * 同一币种已经持仓
+       * 同一币种已经持仓。
        */
 
       if(
@@ -1749,10 +1966,12 @@ function portfolioBacktest(
 
       }
 
+
       const state =
         states.get(
           signal.symbol
         );
+
 
       if(
         !state
@@ -1762,12 +1981,14 @@ function portfolioBacktest(
 
       }
 
+
       const item =
         currentCandles.find(
           x =>
             x.state.p.symbol ===
             signal.symbol
         );
+
 
       if(
         !item
@@ -1777,8 +1998,10 @@ function portfolioBacktest(
 
       }
 
+
       const candle =
         item.candle;
+
 
       /*
        * ------------------------------------------------------
@@ -1816,6 +2039,28 @@ function portfolioBacktest(
         );
 
 
+      /*
+       * 当前已经占用的组合名义价值
+       */
+
+      const existingNotional =
+        Array.from(
+          positions.values()
+        ).reduce(
+          (
+            sum,
+            position
+          ) =>
+            sum +
+            position.notional,
+          0
+        );
+
+
+      /*
+       * 创建仓位
+       */
+
       const position =
         createPosition({
 
@@ -1831,7 +2076,9 @@ function portfolioBacktest(
             signal.stopDistance,
 
           equity:
-            equityForRisk
+            equityForRisk,
+
+          existingNotional
 
         });
 
@@ -1843,12 +2090,26 @@ function portfolioBacktest(
         position.entryTime =
           time;
 
+
         positions.set(
           signal.symbol,
           position
         );
 
+
         diagnostics.entries++;
+
+
+        diagnostics.totalRiskPct +=
+          position.riskPct;
+
+
+        diagnostics.maxRiskPct =
+          Math.max(
+            diagnostics.maxRiskPct,
+            position.riskPct
+          );
+
 
         if(
           coinStats[
@@ -1893,10 +2154,12 @@ function portfolioBacktest(
       const candle =
         item.candle;
 
+
       const position =
         positions.get(
           state.p.symbol
         );
+
 
       if(
         !position
@@ -1906,8 +2169,10 @@ function portfolioBacktest(
 
       }
 
+
       let exit =
         null;
+
 
       let reason =
         null;
@@ -1986,9 +2251,11 @@ function portfolioBacktest(
       cash +=
         trade.netPnl;
 
+
       recordTrade(
         trade
       );
+
 
       positions.delete(
         position.symbol
@@ -2001,11 +2268,23 @@ function portfolioBacktest(
      * ========================================================
      * 第三阶段
      *
-     * 当前15M K线已经完成。
+     * 当前15M已经完成。
      *
      * 检查趋势退出。
      *
-     * 只有没有被止损退出的仓位才会到这里。
+     * 新版逻辑：
+     *
+     * LONG：
+     * 4H反转
+     * OR
+     * 1H + 15M 同时转空
+     *
+     * SHORT：
+     * 4H反转
+     * OR
+     * 1H + 15M 同时转多
+     *
+     * 单独15M反转不退出。
      * ========================================================
      */
 
@@ -2023,10 +2302,12 @@ function portfolioBacktest(
       const candle =
         item.candle;
 
+
       const position =
         positions.get(
           state.p.symbol
         );
+
 
       if(
         !position
@@ -2037,13 +2318,9 @@ function portfolioBacktest(
       }
 
 
-      /*
-       * 高周期必须使用当前15M收盘时间之前
-       * 已经完成的K线。
-       */
-
       const closeTime =
         candle.closeTime;
+
 
       const i4 =
         latestBefore(
@@ -2051,11 +2328,13 @@ function portfolioBacktest(
           closeTime
         );
 
+
       const i1 =
         latestBefore(
           state.p.data1h,
           closeTime
         );
+
 
       if(
         i4 < 200 ||
@@ -2071,21 +2350,26 @@ function portfolioBacktest(
         state.p.e4_50[i4] >
         state.p.e4_200[i4];
 
+
       const bear4 =
         state.p.e4_50[i4] <
         state.p.e4_200[i4];
+
 
       const bull1 =
         state.p.e1_20[i1] >
         state.p.e1_50[i1];
 
+
       const bear1 =
         state.p.e1_20[i1] <
         state.p.e1_50[i1];
 
+
       const bull15 =
         state.p.e15_20[index] >
         state.p.e15_50[index];
+
 
       const bear15 =
         state.p.e15_20[index] <
@@ -2096,6 +2380,18 @@ function portfolioBacktest(
         false;
 
 
+      /*
+       * ======================================================
+       * LONG退出
+       *
+       * 4H反转：
+       * 直接退出
+       *
+       * 或：
+       * 1H + 15M 同时转空
+       * ======================================================
+       */
+
       if(
         position.side ===
         "LONG"
@@ -2103,15 +2399,28 @@ function portfolioBacktest(
 
         shouldExit =
           !bull4 ||
-          !bull1 ||
-          !bull15;
+          (
+            !bull1 &&
+            !bull15
+          );
 
-      }else{
+      }
+
+
+      /*
+       * ======================================================
+       * SHORT退出
+       * ======================================================
+       */
+
+      else{
 
         shouldExit =
           !bear4 ||
-          !bear1 ||
-          !bear15;
+          (
+            !bear1 &&
+            !bear15
+          );
 
       }
 
@@ -2154,9 +2463,11 @@ function portfolioBacktest(
       cash +=
         trade.netPnl;
 
+
       recordTrade(
         trade
       );
+
 
       positions.delete(
         position.symbol
@@ -2169,9 +2480,7 @@ function portfolioBacktest(
      * ========================================================
      * 第四阶段
      *
-     * 当前15M已经完成。
-     *
-     * 在收盘确认新的突破。
+     * 当前15M收盘确认新的突破。
      *
      * 下一根15M开盘执行。
      * ========================================================
@@ -2190,6 +2499,7 @@ function portfolioBacktest(
 
       const candle =
         item.candle;
+
 
       const symbol =
         state.p.symbol;
@@ -2217,12 +2527,9 @@ function portfolioBacktest(
 
 
       /*
-       * 如果已经达到最大持仓，
-       * 后面的信号不再继续产生。
+       * 当前已经达到最大持仓：
        *
-       * 注意：
-       * 这里不是“跳过入场”，
-       * 因为还没有产生可执行信号。
+       * 不再产生新的可执行信号。
        */
 
       if(
@@ -2253,11 +2560,13 @@ function portfolioBacktest(
           closeTime
         );
 
+
       const i1 =
         latestBefore(
           state.p.data1h,
           closeTime
         );
+
 
       if(
         i4 < 200 ||
@@ -2275,6 +2584,7 @@ function portfolioBacktest(
 
       const currentAtr =
         state.p.a15[index];
+
 
       if(
         !Number.isFinite(
@@ -2296,6 +2606,7 @@ function portfolioBacktest(
         state.p.e4_50[i4] >
         state.p.e4_200[i4];
 
+
       const bear4 =
         state.p.e4_50[i4] <
         state.p.e4_200[i4];
@@ -2309,6 +2620,7 @@ function portfolioBacktest(
         state.p.e1_20[i1] >
         state.p.e1_50[i1];
 
+
       const bear1 =
         state.p.e1_20[i1] <
         state.p.e1_50[i1];
@@ -2321,6 +2633,7 @@ function portfolioBacktest(
       const bull15 =
         state.p.e15_20[index] >
         state.p.e15_50[index];
+
 
       const bear15 =
         state.p.e15_20[index] <
@@ -2340,18 +2653,21 @@ function portfolioBacktest(
       /*
        * 突破：
        *
-       * 当前已经完成的K线收盘
-       * > 上一根K线高点
+       * 当前已完成K线收盘
+       * >
+       * 上一根K线高点
        *
        * 或
        *
        * 当前收盘
-       * < 上一根K线低点
+       * <
+       * 上一根K线低点
        */
 
       const longTrigger =
         candle.close >
         previous.high;
+
 
       const shortTrigger =
         candle.close <
@@ -2364,6 +2680,7 @@ function portfolioBacktest(
 
       const nextIndex =
         index + 1;
+
 
       if(
         nextIndex >=
@@ -2436,6 +2753,7 @@ function portfolioBacktest(
         ATR_MULTIPLIER *
         currentAtr;
 
+
       if(
         !Number.isFinite(
           stopDistance
@@ -2450,8 +2768,6 @@ function portfolioBacktest(
 
       /*
        * 产生信号。
-       *
-       * 注意：
        *
        * 此时还没有成交。
        *
@@ -2492,6 +2808,7 @@ function portfolioBacktest(
 
       diagnostics.signals++;
 
+
       if(
         coinStats[
           symbol
@@ -2524,6 +2841,41 @@ function portfolioBacktest(
       );
 
 
+    /*
+     * 当前组合名义价值
+     */
+
+    const currentPortfolioNotional =
+      Array.from(
+        positions.values()
+      ).reduce(
+        (
+          sum,
+          position
+        ) =>
+          sum +
+          position.notional,
+        0
+      );
+
+
+    diagnostics.maxPortfolioNotional =
+      Math.max(
+        diagnostics.maxPortfolioNotional,
+        currentPortfolioNotional
+      );
+
+
+    diagnostics.positionSamples++;
+
+    diagnostics.positionSum +=
+      positions.size;
+
+
+    /*
+     * 峰值权益
+     */
+
     if(
       equity >
       peakEquity
@@ -2534,6 +2886,10 @@ function portfolioBacktest(
 
     }
 
+
+    /*
+     * 当前回撤
+     */
 
     const drawdown =
       peakEquity > 0
@@ -2565,7 +2921,10 @@ function portfolioBacktest(
       equity,
 
       positions:
-        positions.size
+        positions.size,
+
+      portfolioNotional:
+        currentPortfolioNotional
 
     });
 
@@ -2595,6 +2954,7 @@ function portfolioBacktest(
       states.get(
         position.symbol
       );
+
 
     if(
       !state
@@ -2642,16 +3002,24 @@ function portfolioBacktest(
       );
 
 
+    /*
+     * 这里用当前仓位自己的最后价格计算平仓。
+     */
+
+    const exitMap =
+      new Map([
+        [
+          position.symbol,
+          last
+        ]
+      ]);
+
+
     const equityBefore =
       markEquity(
         cash,
         positions,
-        new Map([
-          [
-            position.symbol,
-            last
-          ]
-        ]),
+        exitMap,
         "close"
       );
 
@@ -2672,9 +3040,11 @@ function portfolioBacktest(
     cash +=
       trade.netPnl;
 
+
     recordTrade(
       trade
     );
+
 
     positions.delete(
       position.symbol
@@ -2684,7 +3054,9 @@ function portfolioBacktest(
 
 
   /*
+   * ==========================================================
    * 最终回撤
+   * ==========================================================
    */
 
   if(
@@ -2877,9 +3249,11 @@ function addResult(
     name
   );
 
+
   row.appendChild(
     status
   );
+
 
   box.appendChild(
     row
@@ -3239,6 +3613,80 @@ function displayResult(
 
 
   /*
+   * 风险诊断
+   */
+
+  const entries =
+    result.diagnostics.entries;
+
+
+  const avgRisk =
+    entries > 0
+
+      ? result.diagnostics.totalRiskPct /
+        entries
+
+      : 0;
+
+
+  document.getElementById(
+    "avgRisk"
+  ).textContent =
+    pct(
+      avgRisk
+    );
+
+
+  document.getElementById(
+    "maxRisk"
+  ).textContent =
+    pct(
+      result.diagnostics.maxRiskPct
+    );
+
+
+  /*
+   * 最大组合名义
+   */
+
+  document.getElementById(
+    "maxPortfolioNotional"
+  ).textContent =
+    result.diagnostics.maxPortfolioNotional.toLocaleString(
+      undefined,
+      {
+
+        minimumFractionDigits:
+          2,
+
+        maximumFractionDigits:
+          2
+
+      }
+    ) +
+    " USDT";
+
+
+  /*
+   * 平均持仓
+   */
+
+  const avgPositions =
+    result.diagnostics.positionSamples > 0
+
+      ? result.diagnostics.positionSum /
+        result.diagnostics.positionSamples
+
+      : 0;
+
+
+  document.getElementById(
+    "avgPositions"
+  ).textContent =
+    avgPositions.toFixed(2);
+
+
+  /*
    * 日期
    */
 
@@ -3372,7 +3820,12 @@ async function run(){
     "entrySkipped",
     "stopExits",
     "trendExits",
-    "endExits"
+    "endExits",
+
+    "avgRisk",
+    "maxRisk",
+    "maxPortfolioNotional",
+    "avgPositions"
 
   ];
 
@@ -3519,6 +3972,7 @@ async function run(){
         "失败：" +
         error.message;
 
+
       currentStatus.className =
         "fail";
 
@@ -3559,11 +4013,14 @@ async function run(){
     status.textContent =
       "没有任何币种读取成功";
 
+
     button.disabled =
       false;
 
+
     button.textContent =
       "重新开始回测";
+
 
     return;
 
