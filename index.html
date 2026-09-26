@@ -197,8 +197,6 @@ pre{
 <div class="wrap">
 
 
-<!-- 标题 -->
-
 <div class="card">
 
   <h1>
@@ -207,11 +205,11 @@ pre{
 
   <div class="muted">
 
-    Binance USDT 永续 · 4H · 多空<br>
+    Binance USDT 永续 · 4H → 1H → 15M · 多空<br>
 
-    3000 根K线 · 手续费 · 滑点 · 最大回撤<br>
+    4H 定方向 · 1H 看趋势 · 15M 做交易<br>
 
-    公开行情数据 · 不下单
+    手续费 · 滑点 · 最大回撤 · 公开行情数据 · 不下单
 
   </div>
 
@@ -235,8 +233,6 @@ pre{
 
 </div>
 
-
-<!-- 总结果 -->
 
 <div class="card">
 
@@ -368,8 +364,6 @@ pre{
 </div>
 
 
-<!-- 多空统计 -->
-
 <div class="card">
 
   <h2>
@@ -441,8 +435,6 @@ pre{
 </div>
 
 
-<!-- 币种结果 -->
-
 <div class="card">
 
   <h2>
@@ -462,8 +454,6 @@ pre{
 </div>
 
 
-<!-- 策略 -->
-
 <div class="card">
 
   <h2>
@@ -471,9 +461,15 @@ pre{
   </h2>
 
   <pre>
-EMA50 / EMA200 趋势
+4H：
+EMA50 / EMA200 定大方向
 
-20 根 4H 动量
+1H：
+EMA20 / EMA50 确认趋势
+
+15M：
+EMA20 / EMA50 趋势确认
+价格突破上一根15M K线高点/低点后入场
 
 ATR(14) × 1.5 止损
 
@@ -493,8 +489,10 @@ ATR(14) × 1.5 止损
 
   <div class="note">
 
-    注意：3000 根 4H K线大约覆盖 500 天左右。
-    本页面的结果属于历史回测结果，不代表未来实际交易表现。
+    策略采用三个周期。
+    4H 只负责方向，1H 负责趋势确认，
+    15M 负责寻找实际交易机会。
+    回测过程中不会使用未来K线数据。
 
   </div>
 
@@ -533,17 +531,7 @@ const symbols = [
 
 const INITIAL_CAPITAL = 10000;
 
-
-/*
- * 单边手续费 0.05%
- */
-
 const FEE = 0.0005;
-
-
-/*
- * 单边滑点 0.02%
- */
 
 const SLIPPAGE = 0.0002;
 
@@ -568,8 +556,8 @@ function ema(a,n){
     [e];
 
   for(
-    let i = 1;
-    i < a.length;
+    let i=1;
+    i<a.length;
     i++
   ){
 
@@ -596,7 +584,6 @@ function atr(data,n=14){
     new Array(
       data.length
     ).fill(NaN);
-
 
   const tr =
     new Array(
@@ -665,14 +652,66 @@ function atr(data,n=14){
 
 
 /*
- * 单币种回测
+ * 找到某个时间点之前
+ * 最新已经完成的K线
  */
 
-function calc(data){
+function latestBefore(
+  data,
+  time
+){
+
+  let lo = 0;
+
+  let hi =
+    data.length - 1;
+
+  let answer = -1;
+
+
+  while(lo <= hi){
+
+    const mid =
+      Math.floor(
+        (lo + hi) / 2
+      );
+
+
+    if(
+      data[mid].closeTime <= time
+    ){
+
+      answer = mid;
+
+      lo = mid + 1;
+
+    }else{
+
+      hi = mid - 1;
+
+    }
+
+  }
+
+  return answer;
+
+}
+
+
+/*
+ * 多周期回测
+ */
+
+function calc(
+  data4h,
+  data1h,
+  data15m
+){
 
   if(
-    !data ||
-    data.length < 220
+    data4h.length < 220 ||
+    data1h.length < 60 ||
+    data15m.length < 60
   ){
 
     return {
@@ -686,22 +725,62 @@ function calc(data){
   }
 
 
-  const c =
-    data.map(
+  /*
+   * 4H 指标
+   */
+
+  const c4 =
+    data4h.map(
       x => x.close
     );
 
 
-  const e50 =
-    ema(c,50);
+  const e4_50 =
+    ema(c4,50);
 
 
-  const e200 =
-    ema(c,200);
+  const e4_200 =
+    ema(c4,200);
 
 
-  const a =
-    atr(data,14);
+  /*
+   * 1H 指标
+   */
+
+  const c1 =
+    data1h.map(
+      x => x.close
+    );
+
+
+  const e1_20 =
+    ema(c1,20);
+
+
+  const e1_50 =
+    ema(c1,50);
+
+
+  /*
+   * 15M 指标
+   */
+
+  const c15 =
+    data15m.map(
+      x => x.close
+    );
+
+
+  const e15_20 =
+    ema(c15,20);
+
+
+  const e15_50 =
+    ema(c15,50);
+
+
+  const a15 =
+    atr(data15m,14);
 
 
   const trades = [];
@@ -713,24 +792,122 @@ function calc(data){
 
   let equity = 1;
 
+  let entryAtr = 0;
+
+
+  /*
+   * 从15M开始逐根回测
+   */
 
   for(
-    let i=200;
-    i<data.length;
+    let i=60;
+    i<data15m.length;
     i++
   ){
 
+    const candle =
+      data15m[i];
+
+
+    const time =
+      candle.closeTime;
+
+
+    /*
+     * 找到当时已经完成的4H
+     */
+
+    const i4 =
+      latestBefore(
+        data4h,
+        time
+      );
+
+
+    /*
+     * 找到当时已经完成的1H
+     */
+
+    const i1 =
+      latestBefore(
+        data1h,
+        time
+      );
+
+
     if(
-      !Number.isFinite(a[i])
+      i4 < 200 ||
+      i1 < 50 ||
+      !Number.isFinite(a15[i])
     ){
+
       continue;
+
     }
 
 
-    const mom =
-      c[i] /
-      c[i-20] -
-      1;
+    /*
+     * 4H 大方向
+     */
+
+    const fourHourBull =
+      e4_50[i4] >
+      e4_200[i4];
+
+
+    const fourHourBear =
+      e4_50[i4] <
+      e4_200[i4];
+
+
+    /*
+     * 1H 趋势
+     */
+
+    const oneHourBull =
+      e1_20[i1] >
+      e1_50[i1];
+
+
+    const oneHourBear =
+      e1_20[i1] <
+      e1_50[i1];
+
+
+    /*
+     * 15M 趋势
+     */
+
+    const fifteenBull =
+      e15_20[i] >
+      e15_50[i];
+
+
+    const fifteenBear =
+      e15_20[i] <
+      e15_50[i];
+
+
+    /*
+     * 15M 动量突破
+     *
+     * 当前已经完成的15M K线
+     * 收盘价突破上一根15M高点
+     */
+
+    const longTrigger =
+      candle.close >
+      data15m[i-1].high;
+
+
+    /*
+     * 空头：
+     * 当前收盘跌破上一根15M低点
+     */
+
+    const shortTrigger =
+      candle.close <
+      data15m[i-1].low;
 
 
     /*
@@ -745,20 +922,27 @@ function calc(data){
        */
 
       if(
-        e50[i] >
-        e200[i] &&
-        mom > 0
+        fourHourBull &&
+        oneHourBull &&
+        fifteenBull &&
+        longTrigger
       ){
 
         pos = 1;
+
 
         /*
          * 买入滑点
          */
 
         entry =
-          c[i] *
+          candle.close *
           (1 + SLIPPAGE);
+
+
+        entryAtr =
+          a15[i];
+
 
         continue;
 
@@ -770,20 +954,27 @@ function calc(data){
        */
 
       if(
-        e50[i] <
-        e200[i] &&
-        mom < 0
+        fourHourBear &&
+        oneHourBear &&
+        fifteenBear &&
+        shortTrigger
       ){
 
         pos = -1;
+
 
         /*
          * 做空成交价
          */
 
         entry =
-          c[i] *
+          candle.close *
           (1 - SLIPPAGE);
+
+
+        entryAtr =
+          a15[i];
+
 
         continue;
 
@@ -800,44 +991,70 @@ function calc(data){
 
       const stop =
         entry -
-        1.5 * a[i];
+        1.5 * entryAtr;
 
+
+      /*
+       * 4H方向失效
+       */
+
+      const directionBroken =
+        !fourHourBull;
+
+
+      /*
+       * 1H趋势失效
+       */
 
       const trendBroken =
-        !(
-          e50[i] >
-          e200[i] &&
-          mom > 0
-        );
+        !oneHourBull;
 
+
+      /*
+       * 15M趋势失效
+       */
+
+      const shortTrendBroken =
+        !fifteenBull;
+
+
+      /*
+       * 止损
+       */
 
       const stopHit =
-        c[i] <= stop;
+        candle.low <= stop;
 
 
       if(
         stopHit ||
-        trendBroken
+        directionBroken ||
+        trendBroken ||
+        shortTrendBroken
       ){
 
-        /*
-         * 卖出滑点
-         */
-
         const exit =
-          c[i] *
+          candle.close *
           (1 - SLIPPAGE);
 
 
+        /*
+         * 如果K线最低价
+         * 已经碰到止损，
+         * 按止损价成交。
+         */
+
+        const actualExit =
+          stopHit
+            ? stop *
+              (1 - SLIPPAGE)
+            : exit;
+
+
         const gross =
-          (exit-entry) /
+          (actualExit-entry) /
           entry;
 
-
-        /*
-         * 进场手续费 +
-         * 出场手续费
-         */
 
         const net =
           gross -
@@ -855,7 +1072,7 @@ function calc(data){
 
           entry,
 
-          exit,
+          exit:actualExit,
 
           ret:net
 
@@ -865,6 +1082,8 @@ function calc(data){
         pos = 0;
 
         entry = 0;
+
+        entryAtr = 0;
 
       }
 
@@ -879,37 +1098,46 @@ function calc(data){
 
       const stop =
         entry +
-        1.5 * a[i];
+        1.5 * entryAtr;
+
+
+      const directionBroken =
+        !fourHourBear;
 
 
       const trendBroken =
-        !(
-          e50[i] <
-          e200[i] &&
-          mom < 0
-        );
+        !oneHourBear;
+
+
+      const shortTrendBroken =
+        !fifteenBear;
 
 
       const stopHit =
-        c[i] >= stop;
+        candle.high >= stop;
 
 
       if(
         stopHit ||
-        trendBroken
+        directionBroken ||
+        trendBroken ||
+        shortTrendBroken
       ){
 
-        /*
-         * 空单回补滑点
-         */
-
         const exit =
-          c[i] *
+          candle.close *
           (1 + SLIPPAGE);
 
 
+        const actualExit =
+          stopHit
+            ? stop *
+              (1 + SLIPPAGE)
+            : exit;
+
+
         const gross =
-          (entry-exit) /
+          (entry-actualExit) /
           entry;
 
 
@@ -929,7 +1157,7 @@ function calc(data){
 
           entry,
 
-          exit,
+          exit:actualExit,
 
           ret:net
 
@@ -940,7 +1168,99 @@ function calc(data){
 
         entry = 0;
 
+        entryAtr = 0;
+
       }
+
+    }
+
+  }
+
+
+  /*
+   * 回测结束时，
+   * 如果还有持仓，
+   * 用最后一根15M收盘价平仓。
+   */
+
+  if(pos !== 0){
+
+    const last =
+      data15m[
+        data15m.length-1
+      ];
+
+
+    let exit;
+
+
+    if(pos === 1){
+
+      exit =
+        last.close *
+        (1 - SLIPPAGE);
+
+
+      const gross =
+        (exit-entry) /
+        entry;
+
+
+      const net =
+        gross -
+        FEE -
+        FEE;
+
+
+      equity *=
+        1 + net;
+
+
+      trades.push({
+
+        side:"LONG",
+
+        entry,
+
+        exit,
+
+        ret:net
+
+      });
+
+    }else{
+
+      exit =
+        last.close *
+        (1 + SLIPPAGE);
+
+
+      const gross =
+        (entry-exit) /
+        entry;
+
+
+      const net =
+        gross -
+        FEE -
+        FEE;
+
+
+      equity *=
+        1 + net;
+
+
+      trades.push({
+
+        side:"SHORT",
+
+        entry,
+
+        exit,
+
+        ret:net
+
+      });
 
     }
 
@@ -965,21 +1285,11 @@ function calc(data){
 
 async function get(symbol){
 
-  const url =
-    "/api/klines" +
-    "?symbol=" +
-    encodeURIComponent(symbol) +
-    "&interval=4h" +
-    "&limit=3000";
-
-
   const response =
     await fetch(
-      url,
-      {
-        method:"GET",
-        cache:"no-store"
-      }
+      "/api/market" +
+      "?symbol=" +
+      encodeURIComponent(symbol)
     );
 
 
@@ -1017,13 +1327,21 @@ async function get(symbol){
 
 
   if(
-    !Array.isArray(result.data) ||
-    result.data.length === 0
+    !result.data ||
+    !Array.isArray(
+      result.data["4h"]
+    ) ||
+    !Array.isArray(
+      result.data["1h"]
+    ) ||
+    !Array.isArray(
+      result.data["15m"]
+    )
   ){
 
     throw new Error(
       symbol +
-      "：没有行情数据"
+      "：多周期数据格式错误"
     );
 
   }
@@ -1108,7 +1426,7 @@ function pct(x){
 
 
 /*
- * 计算最大回撤
+ * 最大回撤
  */
 
 function calculateDrawdown(
@@ -1279,19 +1597,7 @@ async function run(){
     symbols.length;
 
 
-  /*
-   * 所有交易
-   */
-
   const allTrades =
-    [];
-
-
-  /*
-   * 每个币种结果
-   */
-
-  const coinResults =
     [];
 
 
@@ -1299,7 +1605,7 @@ async function run(){
 
 
   /*
-   * 一个一个读取
+   * 一个一个币种
    */
 
   for(
@@ -1315,7 +1621,7 @@ async function run(){
     status.textContent =
       "正在读取 " +
       symbol +
-      " ……";
+      " 的 4H / 1H / 15M 数据……";
 
 
     addResult(
@@ -1344,13 +1650,11 @@ async function run(){
     try{
 
       /*
-       * 获取 3000 根
+       * 获取三个周期
        */
 
       const data =
-        await get(
-          symbol
-        );
+        await get(symbol);
 
 
       /*
@@ -1358,40 +1662,24 @@ async function run(){
        */
 
       const result =
-        calc(data);
+        calc(
+          data["4h"],
+          data["1h"],
+          data["15m"]
+        );
 
 
       const trades =
         result.trades;
 
 
-      /*
-       * 保存交易
-       */
-
       allTrades.push(
         ...trades
       );
 
 
-      coinResults.push({
-
-        symbol,
-
-        trades,
-
-        equity:
-          result.finalEquity
-
-      });
-
-
       success++;
 
-
-      /*
-       * 币种收益
-       */
 
       const coinReturn =
         result.finalEquity -
@@ -1399,9 +1687,13 @@ async function run(){
 
 
       currentStatus.textContent =
-        "成功 · " +
-        data.length +
-        " 根K线 · " +
+        "成功 · 4H " +
+        data["4h"].length +
+        " · 1H " +
+        data["1h"].length +
+        " · 15M " +
+        data["15m"].length +
+        " · " +
         trades.length +
         " 笔交易 · " +
         pct(coinReturn);
@@ -1490,26 +1782,14 @@ async function run(){
   }
 
 
-  /*
-   * 最终资金
-   */
-
   const finalCapital =
     INITIAL_CAPITAL *
     equity;
 
 
-  /*
-   * 总收益
-   */
-
   const totalReturn =
     equity - 1;
 
-
-  /*
-   * 胜率
-   */
 
   const wins =
     allTrades.filter(
@@ -1527,12 +1807,6 @@ async function run(){
     wins.length /
     allTrades.length;
 
-
-  /*
-   * Profit Factor
-   *
-   * 总盈利 / 总亏损绝对值
-   */
 
   const grossProfit =
     wins.reduce(
@@ -1559,10 +1833,6 @@ async function run(){
       : Infinity;
 
 
-  /*
-   * 最大回撤
-   */
-
   const maxDD =
     calculateDrawdown(
       allTrades
@@ -1570,7 +1840,7 @@ async function run(){
 
 
   /*
-   * 多空
+   * 多空统计
    */
 
   const longTrades =
@@ -1612,7 +1882,7 @@ async function run(){
 
 
   /*
-   * 显示
+   * 显示结果
    */
 
   document.getElementById(
@@ -1700,10 +1970,6 @@ async function run(){
       ? pct(shortWinRate)
       : "—";
 
-
-  /*
-   * 完成
-   */
 
   status.textContent =
     "回测完成 · 成功读取 " +
