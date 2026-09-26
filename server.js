@@ -9,9 +9,19 @@ app.use(express.static(__dirname));
 
 /*
  * ============================================================
- * Quant V3.7.4 · OOS 数据服务器
+ * Quant V3.7.5 · OOS 数据服务器
  *
  * Binance USD-M Futures
+ *
+ * 本版本重点：
+ *
+ * 1. ZIP 文件级缓存
+ * 2. 正在下载的 ZIP Promise 共享
+ * 3. 全局下载并发限制
+ * 4. 下载超时
+ * 5. 自动重试
+ * 6. Market 请求 Promise 复用
+ * 7. 下载状态监控
  *
  * 数据源：
  *
@@ -43,36 +53,25 @@ const BINANCE_DATA_BASE =
 
 /*
  * ============================================================
- * 版本
+ * Server Version
  * ============================================================
  */
 
 const SERVER_VERSION =
-  "V3.7.4";
+  "V3.7.5";
 
 
 /*
  * ============================================================
- * 固定 OOS 区间
- *
- * 本测试阶段：
+ * 固定 OOS
  *
  * OOS：
  *
- * 2026-09-01
+ * 2026-09-01 00:00 UTC
  * →
- * 2026-09-26
- *
- * 注意：
+ * 2026-09-26 00:00 UTC
  *
  * backtestEnd 为排他时间。
- *
- * 所以实际上使用：
- *
- * 2026-09-01 00:00
- * →
- * 2026-09-25 23:59...
- *
  * ============================================================
  */
 
@@ -91,11 +90,6 @@ const DEFAULT_OOS_END =
 /*
  * ============================================================
  * Warmup
- *
- * 2026-07-01
- * →
- * 2026-09-01
- *
  * ============================================================
  */
 
@@ -108,22 +102,9 @@ const DEFAULT_WARMUP_START =
 /*
  * ============================================================
  * 下载控制
+ * ============================================================
  *
- * 非常重要：
- *
- * V3.5.1 会一次性发送大量 Daily ZIP 请求。
- *
- * 现在改成全局下载队列。
- *
- * 同时最多：
- *
- *     4 个 ZIP
- *
- * 防止 Render：
- *
- *     CPU / RAM / Socket
- *
- * 被大量并发请求拖死。
+ * 同时最多 4 个网络下载。
  *
  * ============================================================
  */
@@ -133,26 +114,27 @@ const DOWNLOAD_CONCURRENCY =
 
 
 /*
- * 下载超时时间：
+ * ============================================================
+ * 单个 ZIP 超时时间
  *
- * 60 秒
- *
- * 如果 Binance 某个请求长时间没有响应，
- * 自动中止并重试。
+ * 45 秒。
  *
  * ============================================================
  */
 
 const DOWNLOAD_TIMEOUT =
-  60 * 1000;
+  45 * 1000;
 
 
 /*
+ * ============================================================
  * 最大重试次数
  *
- * 总共最多尝试：
+ * attempt：
  *
- *     1 + 2 = 3 次
+ * 1
+ * 2
+ * 3
  *
  * ============================================================
  */
@@ -163,7 +145,17 @@ const MAX_RETRIES =
 
 /*
  * ============================================================
- * 下载队列状态
+ * 重试等待
+ * ============================================================
+ */
+
+const RETRY_BASE_DELAY =
+  1500;
+
+
+/*
+ * ============================================================
+ * 下载队列
  * ============================================================
  */
 
@@ -177,101 +169,97 @@ const downloadQueue =
 
 /*
  * ============================================================
- * 下载队列处理
+ * ZIP 数据缓存
+ *
+ * key：
+ *
+ * URL
+ *
+ * value：
+ *
+ * Promise 或已经解析好的 rows
+ *
  * ============================================================
  */
 
-function processDownloadQueue(){
-
-  while(
-
-    activeDownloads <
-      DOWNLOAD_CONCURRENCY &&
-
-    downloadQueue.length > 0
-
-  ){
-
-    const job =
-      downloadQueue.shift();
-
-
-    activeDownloads++;
-
-
-    Promise.resolve()
-
-      .then(
-        job.task
-      )
-
-      .then(
-        job.resolve
-      )
-
-      .catch(
-        job.reject
-      )
-
-      .finally(
-
-        () => {
-
-          activeDownloads--;
-
-          processDownloadQueue();
-
-        }
-
-      );
-
-  }
-
-}
-
-
-/*
- * ============================================================
- * 加入下载队列
- * ============================================================
- */
-
-function enqueueDownload(
-  task
-){
-
-  return new Promise(
-
-    (resolve, reject) => {
-
-      downloadQueue.push({
-
-        task,
-
-        resolve,
-
-        reject
-
-      });
-
-
-      processDownloadQueue();
-
-    }
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * 缓存
- * ============================================================
- */
-
-const cache =
+const zipCache =
   new Map();
+
+
+/*
+ * ============================================================
+ * Market 请求缓存
+ *
+ * 防止用户连续点击回测，
+ * 同一个 market 请求被重复执行。
+ *
+ * ============================================================
+ */
+
+const marketRequestCache =
+  new Map();
+
+
+/*
+ * ============================================================
+ * 历史 K 线缓存
+ *
+ * ============================================================
+ */
+
+const historicalCache =
+  new Map();
+
+
+/*
+ * ============================================================
+ * 下载统计
+ * ============================================================
+ */
+
+const downloadStats = {
+
+  totalRequested: 0,
+
+  queueAdded: 0,
+
+  cacheHits: 0,
+
+  promiseHits: 0,
+
+  completed: 0,
+
+  notFound: 0,
+
+  failed: 0,
+
+  retried: 0
+
+};
+
+
+/*
+ * ============================================================
+ * 当前数据准备状态
+ * ============================================================
+ */
+
+const progressState =
+  new Map();
+
+
+/*
+ * ============================================================
+ * 时间
+ * ============================================================
+ */
+
+function nowIso(){
+
+  return new Date()
+    .toISOString();
+
+}
 
 
 /*
@@ -398,7 +386,7 @@ function addUtcMonths(
 
 /*
  * ============================================================
- * 获取月份列表
+ * 月份列表
  * ============================================================
  */
 
@@ -496,7 +484,7 @@ function monthRange(
 
 /*
  * ============================================================
- * 获取日期列表
+ * 日期列表
  * ============================================================
  */
 
@@ -597,7 +585,7 @@ function dayRange(
 
 /*
  * ============================================================
- * OOS / Warmup
+ * Resolve Range
  * ============================================================
  */
 
@@ -703,7 +691,7 @@ function resolveRange(req){
 
 /*
  * ============================================================
- * Monthly ZIP URL
+ * Monthly URL
  * ============================================================
  */
 
@@ -738,7 +726,7 @@ function buildMonthlyUrl(
 
 /*
  * ============================================================
- * Daily ZIP URL
+ * Daily URL
  * ============================================================
  */
 
@@ -775,7 +763,126 @@ function buildDailyUrl(
 
 /*
  * ============================================================
- * CSV 解析
+ * 下载队列处理
+ * ============================================================
+ */
+
+function processDownloadQueue(){
+
+  while(
+
+    activeDownloads <
+      DOWNLOAD_CONCURRENCY &&
+
+    downloadQueue.length > 0
+
+  ){
+
+    const job =
+      downloadQueue.shift();
+
+
+    activeDownloads++;
+
+
+    Promise.resolve()
+
+      .then(
+        job.task
+      )
+
+      .then(
+        job.resolve
+      )
+
+      .catch(
+        job.reject
+      )
+
+      .finally(
+
+        () => {
+
+          activeDownloads--;
+
+          processDownloadQueue();
+
+        }
+
+      );
+
+  }
+
+}
+
+
+/*
+ * ============================================================
+ * 加入下载队列
+ * ============================================================
+ */
+
+function enqueueDownload(
+  task
+){
+
+  return new Promise(
+
+    (resolve, reject) => {
+
+      downloadStats.queueAdded++;
+
+
+      downloadQueue.push({
+
+        task,
+
+        resolve,
+
+        reject
+
+      });
+
+
+      processDownloadQueue();
+
+    }
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Sleep
+ * ============================================================
+ */
+
+function sleep(
+  ms
+){
+
+  return new Promise(
+
+    resolve =>
+
+      setTimeout(
+
+        resolve,
+
+        ms
+
+      )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * CSV Parser
  * ============================================================
  */
 
@@ -825,12 +932,6 @@ function parseCsv(text){
       line.split(",");
 
 
-    /*
-     * Binance Futures CSV 第一列：
-     *
-     * Open time
-     */
-
     let openTime =
       Number(
         row[0]
@@ -838,8 +939,7 @@ function parseCsv(text){
 
 
     /*
-     * 如果第一列不是数字，
-     * 认为是 CSV 表头。
+     * CSV Header
      */
 
     if(
@@ -854,10 +954,7 @@ function parseCsv(text){
 
 
     /*
-     * 兼容微秒时间戳。
-     *
-     * Futures 通常为毫秒，
-     * 但这里做兼容处理。
+     * 兼容微秒时间戳
      */
 
     if(
@@ -902,10 +999,22 @@ function parseCsv(text){
       );
 
 
-    const closeTime =
+    let closeTime =
       Number(
         row[6]
       );
+
+
+    if(
+      closeTime > 1e15
+    ){
+
+      closeTime =
+        Math.floor(
+          closeTime / 1000
+        );
+
+    }
 
 
     if(
@@ -929,6 +1038,10 @@ function parseCsv(text){
     }
 
 
+    /*
+     * 基础合法性
+     */
+
     if(
 
       open <= 0 ||
@@ -937,12 +1050,37 @@ function parseCsv(text){
 
       low <= 0 ||
 
-      close <= 0 ||
+      close <= 0
 
-      high < low ||
+    ){
 
-      low > high
+      continue;
 
+    }
+
+
+    if(
+      high < low
+    ){
+
+      continue;
+
+    }
+
+
+    if(
+      open < low ||
+      open > high
+    ){
+
+      continue;
+
+    }
+
+
+    if(
+      close < low ||
+      close > high
     ){
 
       continue;
@@ -986,6 +1124,28 @@ function extractZipCsv(
   buffer
 ){
 
+  if(
+    !Buffer.isBuffer(buffer)
+  ){
+
+    throw new Error(
+      "ZIP 数据不是有效 Buffer"
+    );
+
+  }
+
+
+  if(
+    buffer.length === 0
+  ){
+
+    throw new Error(
+      "ZIP 数据为空"
+    );
+
+  }
+
+
   const zip =
     new AdmZip(
       buffer
@@ -1010,12 +1170,12 @@ function extractZipCsv(
     );
 
 
-  if(!csvEntry){
+  if(
+    !csvEntry
+  ){
 
     throw new Error(
-
       "ZIP 中没有 CSV 文件"
-
     );
 
   }
@@ -1036,40 +1196,30 @@ function extractZipCsv(
 
 /*
  * ============================================================
- * Sleep
- * ============================================================
- */
-
-function sleep(
-  ms
-){
-
-  return new Promise(
-    resolve =>
-      setTimeout(
-        resolve,
-        ms
-      )
-  );
-
-}
-
-
-/*
- * ============================================================
- * 下载单个 ZIP
+ * ZIP 下载
  *
- * 增加：
+ * 这是 V3.7.5 最重要的修改。
  *
- * 1. 超时
- * 2. 自动重试
- * 3. 429 / 5xx 重试
- * 4. 下载队列
+ * 同一个 URL：
+ *
+ * 第一次：
+ *
+ *     真正下载
+ *
+ * 第二次：
+ *
+ *     直接共享第一次 Promise
+ *
+ * 第三次：
+ *
+ *     继续共享
+ *
+ * 不会重复请求 Binance。
  *
  * ============================================================
  */
 
-async function downloadZip(
+function downloadZip(
 
   url,
 
@@ -1077,274 +1227,488 @@ async function downloadZip(
 
 ){
 
-  return enqueueDownload(
-
-    async() => {
-
-      let lastError =
-        null;
+  downloadStats.totalRequested++;
 
 
-      for(
+  /*
+   * ==========================================================
+   * 已完成缓存
+   * ==========================================================
+   */
 
-        let attempt = 0;
+  const cached =
+    zipCache.get(
+      url
+    );
 
-        attempt <= MAX_RETRIES;
 
-        attempt++
+  if(
+    cached
+  ){
 
-      ){
+    /*
+     * 如果是 Promise：
+     *
+     * 代表正在下载。
+     */
 
-        let controller =
+    if(
+      cached &&
+      typeof cached.then === "function"
+    ){
+
+      downloadStats.promiseHits++;
+
+
+      console.log(
+
+        `[ZIP WAIT]`,
+
+        description
+
+      );
+
+
+      return cached;
+
+    }
+
+
+    /*
+     * 如果是数组：
+     *
+     * 代表已经下载完成。
+     */
+
+    downloadStats.cacheHits++;
+
+
+    console.log(
+
+      `[ZIP CACHE HIT]`,
+
+      description
+
+    );
+
+
+    return Promise.resolve(
+      cached
+    );
+
+  }
+
+
+  /*
+   * ==========================================================
+   * 创建真正的下载 Promise
+   * ==========================================================
+   */
+
+  const promise =
+    enqueueDownload(
+
+      async() => {
+
+        let lastError =
           null;
 
 
-        let timeout =
-          null;
+        for(
+
+          let attempt = 0;
+
+          attempt <= MAX_RETRIES;
+
+          attempt++
+
+        ){
+
+          let controller =
+            null;
 
 
-        try{
-
-          console.log(
-
-            `[DOWNLOAD ${attempt + 1}/${MAX_RETRIES + 1}]`,
-
-            description
-
-          );
+          let timeoutId =
+            null;
 
 
-          controller =
-            new AbortController();
-
-
-          timeout =
-            setTimeout(
-
-              () => {
-
-                controller.abort();
-
-              },
-
-              DOWNLOAD_TIMEOUT
-
-            );
-
-
-          const response =
-            await fetch(
-
-              url,
-
-              {
-
-                signal:
-                  controller.signal
-
-              }
-
-            );
-
-
-          clearTimeout(
-            timeout
-          );
-
-
-          /*
-           * ==================================================
-           * 404
-           *
-           * 代表文件不存在。
-           *
-           * 例如：
-           *
-           * 某币种当时还没有上市
-           *
-           * 或当天 archive 尚未存在。
-           *
-           * ==================================================
-           */
-
-          if(
-            response.status === 404
-          ){
+          try{
 
             console.log(
 
-              `[404]`,
+              `[DOWNLOAD ${attempt + 1}/${MAX_RETRIES + 1}]`,
 
               description
 
             );
 
 
-            return [];
+            controller =
+              new AbortController();
 
-          }
+
+            timeoutId =
+              setTimeout(
+
+                () => {
+
+                  controller.abort();
+
+                },
+
+                DOWNLOAD_TIMEOUT
+
+              );
 
 
-          /*
-           * ==================================================
-           * 429 / 5xx
-           *
-           * 重试。
-           * ==================================================
-           */
+            const response =
+              await fetch(
 
-          if(
+                url,
 
-            response.status === 429 ||
+                {
 
-            response.status >= 500
+                  signal:
+                    controller.signal,
 
-          ){
+                  headers:{
 
-            throw new Error(
+                    "User-Agent":
+                      "Quant-V3.7.5"
 
-              `HTTP ${response.status}`
+                  }
 
+                }
+
+              );
+
+
+            if(
+              timeoutId
+            ){
+
+              clearTimeout(
+                timeoutId
+              );
+
+              timeoutId =
+                null;
+
+            }
+
+
+            /*
+             * ==================================================
+             * 404
+             * ==================================================
+             */
+
+            if(
+              response.status === 404
+            ){
+
+              downloadStats.notFound++;
+
+
+              console.log(
+
+                `[404]`,
+
+                description
+
+              );
+
+
+              return [];
+
+            }
+
+
+            /*
+             * ==================================================
+             * 429
+             *
+             * 服务器限流。
+             * ==================================================
+             */
+
+            if(
+              response.status === 429
+            ){
+
+              throw new Error(
+                "HTTP 429 Too Many Requests"
+              );
+
+            }
+
+
+            /*
+             * ==================================================
+             * 5xx
+             * ==================================================
+             */
+
+            if(
+              response.status >= 500
+            ){
+
+              throw new Error(
+
+                `HTTP ${response.status}`
+
+              );
+
+            }
+
+
+            if(
+              !response.ok
+            ){
+
+              throw new Error(
+
+                `HTTP ${response.status}`
+
+              );
+
+            }
+
+
+            /*
+             * ==================================================
+             * 下载
+             * ==================================================
+             */
+
+            const arrayBuffer =
+              await response.arrayBuffer();
+
+
+            const buffer =
+              Buffer.from(
+                arrayBuffer
+              );
+
+
+            if(
+              buffer.length === 0
+            ){
+
+              throw new Error(
+                "服务器返回空文件"
+              );
+
+            }
+
+
+            /*
+             * ==================================================
+             * ZIP 解析
+             * ==================================================
+             */
+
+            const rows =
+              extractZipCsv(
+                buffer
+              );
+
+
+            console.log(
+
+              `[DOWNLOAD OK]`,
+
+              description,
+
+              `candles=${rows.length}`
+
+            );
+
+
+            downloadStats.completed++;
+
+
+            return rows;
+
+          }catch(error){
+
+            if(
+              timeoutId
+            ){
+
+              clearTimeout(
+                timeoutId
+              );
+
+            }
+
+
+            lastError =
+              error;
+
+
+            let message =
+              error?.message ||
+              "未知错误";
+
+
+            if(
+              error?.name ===
+              "AbortError"
+            ){
+
+              message =
+                "下载超时";
+
+            }
+
+
+            console.error(
+
+              `[DOWNLOAD ERROR]`,
+
+              description,
+
+              message
+
+            );
+
+
+            /*
+             * ==================================================
+             * 是否重试
+             * ==================================================
+             */
+
+            if(
+              attempt >= MAX_RETRIES
+            ){
+
+              break;
+
+            }
+
+
+            downloadStats.retried++;
+
+
+            const waitMs =
+              RETRY_BASE_DELAY *
+              Math.pow(
+                2,
+                attempt
+              );
+
+
+            console.log(
+
+              `[RETRY]`,
+
+              description,
+
+              `${waitMs}ms`
+
+            );
+
+
+            await sleep(
+              waitMs
             );
 
           }
-
-
-          if(
-            !response.ok
-          ){
-
-            throw new Error(
-
-              `HTTP ${response.status}`
-
-            );
-
-          }
-
-
-          const arrayBuffer =
-            await response.arrayBuffer();
-
-
-          const buffer =
-            Buffer.from(
-              arrayBuffer
-            );
-
-
-          const rows =
-            extractZipCsv(
-              buffer
-            );
-
-
-          console.log(
-
-            `[OK]`,
-
-            description,
-
-            `candles=${rows.length}`
-
-          );
-
-
-          return rows;
-
-        }catch(error){
-
-          if(
-            timeout
-          ){
-
-            clearTimeout(
-              timeout
-            );
-
-          }
-
-
-          lastError =
-            error;
-
-
-          console.error(
-
-            `[DOWNLOAD ERROR]`,
-
-            description,
-
-            error.message
-
-          );
-
-
-          if(
-            attempt >= MAX_RETRIES
-          ){
-
-            break;
-
-          }
-
-
-          /*
-           * 指数退避：
-           *
-           * 第一次：
-           * 2 秒
-           *
-           * 第二次：
-           * 4 秒
-           */
-
-          const waitMs =
-            2000 *
-            Math.pow(
-              2,
-              attempt
-            );
-
-
-          console.log(
-
-            `[RETRY]`,
-
-            description,
-
-            `${waitMs}ms`
-
-          );
-
-
-          await sleep(
-            waitMs
-          );
 
         }
 
+
+        downloadStats.failed++;
+
+
+        throw new Error(
+
+          `${description} 下载失败：` +
+
+          `${lastError?.message || "未知错误"}`
+
+        );
+
       }
 
+    );
 
-      throw new Error(
 
-        `${description} 下载失败：` +
+  /*
+   * ==========================================================
+   * 立即放入 ZIP Promise Cache
+   *
+   * 注意：
+   *
+   * 必须在下载开始之前放进去。
+   *
+   * 这样其它周期看到同一个 URL，
+   * 会直接共享这个 Promise。
+   * ==========================================================
+   */
 
-        `${lastError?.message || "未知错误"}`
+  zipCache.set(
 
-      );
+    url,
 
-    }
+    promise
 
   );
+
+
+  /*
+   * ==========================================================
+   * 下载成功：
+   *
+   * Promise → rows
+   *
+   * 下载失败：
+   *
+   * 删除缓存
+   * ==========================================================
+   */
+
+  promise
+
+    .then(
+
+      rows => {
+
+        zipCache.set(
+
+          url,
+
+          rows
+
+        );
+
+      }
+
+    )
+
+    .catch(
+
+      () => {
+
+        zipCache.delete(
+          url
+        );
+
+      }
+
+    );
+
+
+  return promise;
 
 }
 
 
 /*
  * ============================================================
- * 下载 Monthly
+ * Monthly
  * ============================================================
  */
 
@@ -1387,7 +1751,7 @@ async function downloadMonthly(
 
 /*
  * ============================================================
- * 下载 Daily
+ * Daily
  * ============================================================
  */
 
@@ -1486,16 +1850,7 @@ function deduplicateKlines(
 
 /*
  * ============================================================
- * 判断一个月份是否已经完整结束
- *
- * 如果月份已经完整结束：
- *
- *     Monthly
- *
- * 如果月份仍然进行中：
- *
- *     Daily
- *
+ * 判断月份是否完整结束
  * ============================================================
  */
 
@@ -1519,18 +1874,97 @@ function isCompletedMonth(
 
 /*
  * ============================================================
+ * 创建进度对象
+ * ============================================================
+ */
+
+function createProgress(
+
+  symbol,
+
+  interval
+
+){
+
+  const key =
+    `${symbol}:${interval}`;
+
+
+  const progress = {
+
+    key,
+
+    symbol,
+
+    interval,
+
+    status:
+      "starting",
+
+    startedAt:
+      nowIso(),
+
+    finishedAt:
+      null,
+
+    monthlyTotal:
+      0,
+
+    monthlyDone:
+      0,
+
+    dailyTotal:
+      0,
+
+    dailyDone:
+      0,
+
+    candles:
+      0,
+
+    error:
+      null
+
+  };
+
+
+  progressState.set(
+    key,
+    progress
+  );
+
+
+  return progress;
+
+}
+
+
+/*
+ * ============================================================
+ * 更新进度
+ * ============================================================
+ */
+
+function getProgress(
+
+  symbol,
+
+  interval
+
+){
+
+  return progressState.get(
+
+    `${symbol}:${interval}`
+
+  ) || null;
+
+}
+
+
+/*
+ * ============================================================
  * 获取历史 K 线
- *
- * 核心逻辑：
- *
- * 完整月份：
- *
- *     Monthly ZIP
- *
- * 当前 / 不完整月份：
- *
- *     Daily ZIP
- *
  * ============================================================
  */
 
@@ -1558,34 +1992,38 @@ async function fetchHistoricalKlines(
 
   const cacheKey =
 
-    `${SERVER_VERSION}_` +
+    `${SERVER_VERSION}:` +
 
-    `${symbol}_` +
+    `${symbol}:` +
 
-    `${interval}_` +
+    `${interval}:` +
 
-    `${warmupStart}_` +
+    `${warmupStart}:` +
 
-    `${oosStart}_` +
+    `${oosStart}:` +
 
     `${oosEnd}`;
 
 
   /*
    * ==========================================================
-   * Cache
+   * Historical Cache
    * ==========================================================
    */
 
-  if(
-    cache.has(
+  const cached =
+    historicalCache.get(
       cacheKey
-    )
+    );
+
+
+  if(
+    cached
   ){
 
     console.log(
 
-      `[CACHE HIT]`,
+      `[HISTORICAL CACHE HIT]`,
 
       symbol,
 
@@ -1594,11 +2032,25 @@ async function fetchHistoricalKlines(
     );
 
 
-    return cache.get(
-      cacheKey
-    );
+    return cached;
 
   }
+
+
+  /*
+   * ==========================================================
+   * 创建进度
+   * ==========================================================
+   */
+
+  const progress =
+    createProgress(
+
+      symbol,
+
+      interval
+
+    );
 
 
   /*
@@ -1610,94 +2062,225 @@ async function fetchHistoricalKlines(
   const promise =
     (async() => {
 
-      console.log(
+      try{
 
-        `[DATA START]`,
-
-        symbol,
-
-        interval
-
-      );
+        progress.status =
+          "loading";
 
 
-      const months =
-        monthRange(
+        console.log(
 
-          warmupStart,
+          `[DATA START]`,
 
-          oosEnd
+          symbol,
+
+          interval
 
         );
 
 
-      let all = [];
-
-
-      /*
-       * ======================================================
-       * 每个月
-       * ======================================================
-       */
-
-      for(
-        const month
-        of months
-      ){
-
-        const monthStart =
-          Math.max(
+        const months =
+          monthRange(
 
             warmupStart,
 
-            month.start
+            oosEnd
 
           );
 
 
-        const monthEnd =
-          Math.min(
-
-            oosEnd,
-
-            month.end
-
-          );
+        let all = [];
 
 
-        if(
-          monthStart >= monthEnd
+        /*
+         * ====================================================
+         * 先统计任务
+         * ====================================================
+         */
+
+        for(
+          const month
+          of months
         ){
 
-          continue;
+          const monthStart =
+            Math.max(
+
+              warmupStart,
+
+              month.start
+
+            );
+
+
+          const monthEnd =
+            Math.min(
+
+              oosEnd,
+
+              month.end
+
+            );
+
+
+          if(
+            monthStart >= monthEnd
+          ){
+
+            continue;
+
+          }
+
+
+          if(
+
+            isCompletedMonth(
+              month
+            ) &&
+
+            monthStart ===
+              month.start &&
+
+            monthEnd ===
+              month.end
+
+          ){
+
+            progress.monthlyTotal++;
+
+          }else{
+
+            progress.dailyTotal +=
+
+              dayRange(
+
+                monthStart,
+
+                monthEnd
+
+              ).length;
+
+          }
 
         }
 
 
         /*
          * ====================================================
-         * 完整月份
-         *
-         * Monthly
+         * 开始下载
          * ====================================================
          */
 
-        if(
-          isCompletedMonth(
-            month
-          ) &&
-
-          monthStart ===
-            month.start &&
-
-          monthEnd ===
-            month.end
-
+        for(
+          const month
+          of months
         ){
+
+          const monthStart =
+            Math.max(
+
+              warmupStart,
+
+              month.start
+
+            );
+
+
+          const monthEnd =
+            Math.min(
+
+              oosEnd,
+
+              month.end
+
+            );
+
+
+          if(
+            monthStart >= monthEnd
+          ){
+
+            continue;
+
+          }
+
+
+          /*
+           * ==================================================
+           * Monthly
+           * ==================================================
+           */
+
+          if(
+
+            isCompletedMonth(
+              month
+            ) &&
+
+            monthStart ===
+              month.start &&
+
+            monthEnd ===
+              month.end
+
+          ){
+
+            console.log(
+
+              `[MONTHLY]`,
+
+              symbol,
+
+              interval,
+
+              `${month.year}-${month.month}`
+
+            );
+
+
+            const rows =
+              await downloadMonthly(
+
+                symbol,
+
+                interval,
+
+                month.year,
+
+                month.month
+
+              );
+
+
+            progress.monthlyDone++;
+
+
+            if(
+              rows.length
+            ){
+
+              all =
+                all.concat(
+                  rows
+                );
+
+            }
+
+
+            continue;
+
+          }
+
+
+          /*
+           * ==================================================
+           * Daily
+           * ==================================================
+           */
 
           console.log(
 
-            `[MONTHLY]`,
+            `[DAILY]`,
 
             symbol,
 
@@ -1708,289 +2291,280 @@ async function fetchHistoricalKlines(
           );
 
 
-          const rows =
-            await downloadMonthly(
+          const days =
+            dayRange(
 
-              symbol,
+              monthStart,
 
-              interval,
-
-              month.year,
-
-              month.month
+              monthEnd
 
             );
 
 
-          if(
-            rows.length
+          /*
+           * ==================================================
+           * Daily 请求全部进入全局队列。
+           *
+           * Promise.all 不会造成同时发几十个网络请求，
+           * 因为真正 fetch 在 downloadQueue 中。
+           * ==================================================
+           */
+
+          const jobs =
+            days.map(
+
+              day =>
+
+                downloadDaily(
+
+                  symbol,
+
+                  interval,
+
+                  day.year,
+
+                  day.month,
+
+                  day.day
+
+                )
+
+                .then(
+
+                  rows => {
+
+                    progress.dailyDone++;
+
+
+                    return rows;
+
+                  }
+
+                )
+
+            );
+
+
+          const dailyData =
+            await Promise.all(
+              jobs
+            );
+
+
+          for(
+            const rows
+            of dailyData
           ){
 
-            all =
-              all.concat(
-                rows
-              );
+            if(
+              rows.length
+            ){
+
+              all =
+                all.concat(
+                  rows
+                );
+
+            }
 
           }
-
-
-          continue;
 
         }
 
 
         /*
          * ====================================================
-         * 不完整月份
-         *
-         * Daily
+         * 去重
          * ====================================================
          */
 
+        const unique =
+          deduplicateKlines(
+            all
+          );
+
+
+        /*
+         * ====================================================
+         * 最终过滤
+         * ====================================================
+ */
+
+        const result =
+          unique.filter(
+
+            row =>
+
+              row.openTime >=
+                warmupStart &&
+
+              row.openTime <
+                oosEnd
+
+          );
+
+
+        if(
+          result.length === 0
+        ){
+
+          throw new Error(
+
+            `${symbol} ${interval}：` +
+
+            `指定时间范围没有历史K线`
+
+          );
+
+        }
+
+
+        /*
+         * ====================================================
+         * 第一根 / 最后一根
+         * ====================================================
+         */
+
+        const first =
+          result[0].openTime;
+
+
+        const last =
+          result[
+            result.length - 1
+          ].openTime;
+
+
+        progress.candles =
+          result.length;
+
+
+        /*
+         * ====================================================
+         * OOS 检查
+         * ====================================================
+         */
+
+        const oosRows =
+          result.filter(
+
+            row =>
+
+              row.openTime >=
+                oosStart &&
+
+              row.openTime <
+                oosEnd
+
+          );
+
+
+        if(
+          oosRows.length === 0
+        ){
+
+          throw new Error(
+
+            `${symbol} ${interval}：` +
+
+            `OOS 区间没有数据`
+
+          );
+
+        }
+
+
+        /*
+         * ====================================================
+         * 完成
+         * ====================================================
+         */
+
+        progress.status =
+          "ready";
+
+
+        progress.finishedAt =
+          nowIso();
+
+
         console.log(
 
-          `[DAILY]`,
+          `[DATA READY]`,
 
           symbol,
 
           interval,
 
-          `${month.year}-${month.month}`,
+          `candles=${result.length}`
 
-          new Date(
-            monthStart
-          ).toISOString(),
+        );
+
+
+        console.log(
+
+          `[DATA RANGE]`,
+
+          symbol,
+
+          interval,
+
+          `${new Date(
+            first
+          ).toISOString()}`,
 
           "→",
 
-          new Date(
-            monthEnd
-          ).toISOString()
+          `${new Date(
+            last
+          ).toISOString()}`
 
         );
 
 
-        const days =
-          dayRange(
+        console.log(
 
-            monthStart,
+          `[OOS READY]`,
 
-            monthEnd
+          symbol,
 
-          );
+          interval,
 
+          `candles=${oosRows.length}`
 
-        /*
-         * ====================================================
-         * 注意：
-         *
-         * 这里虽然创建多个任务，
-         * 但真正的网络下载由全局 queue 控制。
-         *
-         * 不会再同时发送几十个请求。
-         * ====================================================
-         */
-
-        const jobs =
-          days.map(
-
-            day =>
-
-              downloadDaily(
-
-                symbol,
-
-                interval,
-
-                day.year,
-
-                day.month,
-
-                day.day
-
-              )
-
-          );
+        );
 
 
-        const dailyData =
-          await Promise.all(
-            jobs
-          );
+        return result;
+
+      }catch(error){
+
+        progress.status =
+          "error";
 
 
-        for(
-          const rows
-          of dailyData
-        ){
+        progress.error =
+          error.message;
 
-          if(
-            rows.length
-          ){
 
-            all =
-              all.concat(
-                rows
-              );
+        progress.finishedAt =
+          nowIso();
 
-          }
 
-        }
+        throw error;
 
       }
-
-
-      /*
-       * ======================================================
-       * 去重
-       * ======================================================
-       */
-
-      const unique =
-        deduplicateKlines(
-          all
-        );
-
-
-      /*
-       * ======================================================
-       * 时间过滤
-       * ======================================================
-       */
-
-      const result =
-        unique.filter(
-
-          row =>
-
-            row.openTime >=
-              warmupStart &&
-
-            row.openTime <
-              oosEnd
-
-        );
-
-
-      if(
-        result.length === 0
-      ){
-
-        throw new Error(
-
-          `${symbol} ${interval}：` +
-
-          `指定时间范围没有历史K线`
-
-        );
-
-      }
-
-
-      /*
-       * ======================================================
-       * 第一根 / 最后一根
-       * ======================================================
-       */
-
-      const first =
-        result[0].openTime;
-
-
-      const last =
-        result[
-          result.length - 1
-        ].openTime;
-
-
-      console.log(
-
-        `[DATA READY]`,
-
-        symbol,
-
-        interval,
-
-        `candles=${result.length}`
-
-      );
-
-
-      console.log(
-
-        `[DATA RANGE]`,
-
-        symbol,
-
-        interval,
-
-        `${new Date(
-          first
-        ).toISOString()}`,
-
-        "→",
-
-        `${new Date(
-          last
-        ).toISOString()}`
-
-      );
-
-
-      /*
-       * ======================================================
-       * OOS 检查
-       * ======================================================
-       */
-
-      const oosRows =
-        result.filter(
-
-          row =>
-
-            row.openTime >=
-              oosStart &&
-
-            row.openTime <
-              oosEnd
-
-        );
-
-
-      if(
-        oosRows.length === 0
-      ){
-
-        throw new Error(
-
-          `${symbol} ${interval}：` +
-
-          `OOS 区间没有数据`
-
-        );
-
-      }
-
-
-      console.log(
-
-        `[OOS READY]`,
-
-        symbol,
-
-        interval,
-
-        `candles=${oosRows.length}`
-
-      );
-
-
-      return result;
 
     })();
 
 
-  cache.set(
+  /*
+   * ==========================================================
+   * 立即缓存 Promise
+   * ==========================================================
+   */
+
+  historicalCache.set(
 
     cacheKey,
 
@@ -1999,33 +2573,27 @@ async function fetchHistoricalKlines(
   );
 
 
-  try{
+  /*
+   * ==========================================================
+   * 成功保持缓存
+   * 失败删除
+   * ==========================================================
+   */
 
-    const result =
-      await promise;
+  promise.catch(
 
+    () => {
 
-    cache.set(
+      historicalCache.delete(
+        cacheKey
+      );
 
-      cacheKey,
+    }
 
-      result
-
-    );
-
-
-    return result;
-
-  }catch(error){
-
-    cache.delete(
-      cacheKey
-    );
+  );
 
 
-    throw error;
-
-  }
+  return promise;
 
 }
 
@@ -2095,7 +2663,16 @@ function getMeta(
       DOWNLOAD_TIMEOUT,
 
     maxRetries:
-      MAX_RETRIES
+      MAX_RETRIES,
+
+    zipCacheSize:
+      zipCache.size,
+
+    historicalCacheSize:
+      historicalCache.size,
+
+    marketRequestCacheSize:
+      marketRequestCache.size
 
   };
 
@@ -2104,68 +2681,76 @@ function getMeta(
 
 /*
  * ============================================================
- * /api/market
+ * Market Request
+ *
+ * 这是第二层防重复。
+ *
+ * 用户连续点击：
+ *
+ *     第一次点击
+ *     ↓
+ *     开始准备数据
+ *
+ *     第二次点击
+ *     ↓
+ *     直接等待第一次
+ *
+ *     第三次点击
+ *     ↓
+ *     仍然等待第一次
+ *
+ * 不会重新建立整套数据任务。
+ *
  * ============================================================
  */
 
-app.get(
+async function executeMarketRequest(
 
-  "/api/market",
+  symbol,
 
-  async(
+  range
 
-    req,
+){
 
-    res
+  const requestKey =
 
-  ) => {
+    `${SERVER_VERSION}:` +
 
-    try{
+    `${symbol}:` +
 
-      const symbol =
-        String(
+    `${range.warmupStart}:` +
 
-          req.query.symbol ||
-          ""
+    `${range.oosStart}:` +
 
-        ).toUpperCase();
+    `${range.oosEnd}`;
 
 
-      /*
-       * ======================================================
-       * Symbol 检查
-       * ======================================================
-       */
-
-      if(
-
-        !/^[A-Z0-9]{5,20}$/.test(
-          symbol
-        )
-
-      ){
-
-        return res
-
-          .status(400)
-
-          .json({
-
-            ok:false,
-
-            error:
-              "symbol 参数错误"
-
-          });
-
-      }
+  const existing =
+    marketRequestCache.get(
+      requestKey
+    );
 
 
-      const range =
-        resolveRange(
-          req
-        );
+  if(
+    existing
+  ){
 
+    console.log(
+
+      `[MARKET REQUEST SHARED]`,
+
+      symbol
+
+    );
+
+
+    return existing;
+
+  }
+
+
+  const promise =
+    (async() => {
 
       console.log(
         "=============================================="
@@ -2232,10 +2817,6 @@ app.get(
       /*
        * ======================================================
        * 三周期
-       *
-       * Promise.all 没问题。
-       *
-       * 真正网络下载由 queue 控制。
        * ======================================================
        */
 
@@ -2374,11 +2955,141 @@ app.get(
       }
 
 
+      console.log(
+
+        `[MARKET READY]`,
+
+        symbol
+
+      );
+
+
+      return {
+
+        data4h,
+
+        data1h,
+
+        data15m
+
+      };
+
+    })();
+
+
+  marketRequestCache.set(
+
+    requestKey,
+
+    promise
+
+  );
+
+
+  promise.catch(
+
+    () => {
+
+      marketRequestCache.delete(
+        requestKey
+      );
+
+    }
+
+  );
+
+
+  return promise;
+
+}
+
+
+/*
+ * ============================================================
+ * /api/market
+ * ============================================================
+ */
+
+app.get(
+
+  "/api/market",
+
+  async(
+
+    req,
+
+    res
+
+  ) => {
+
+    try{
+
+      const symbol =
+        String(
+
+          req.query.symbol ||
+          ""
+
+        ).toUpperCase();
+
+
       /*
        * ======================================================
-       * 返回
+       * Symbol
        * ======================================================
        */
+
+      if(
+
+        !/^[A-Z0-9]{5,20}$/.test(
+          symbol
+        )
+
+      ){
+
+        return res
+
+          .status(400)
+
+          .json({
+
+            ok:false,
+
+            version:
+              SERVER_VERSION,
+
+            error:
+              "symbol 参数错误"
+
+          });
+
+      }
+
+
+      const range =
+        resolveRange(
+          req
+        );
+
+
+      const {
+
+        data4h,
+
+        data1h,
+
+        data15m
+
+      } =
+
+        await executeMarketRequest(
+
+          symbol,
+
+          range
+
+        );
+
 
       return res.json({
 
@@ -2458,7 +3169,9 @@ app.get(
 
 /*
  * ============================================================
- * 清除缓存
+ * /api/cache/clear
+ *
+ * 清除所有缓存。
  * ============================================================
  */
 
@@ -2474,11 +3187,34 @@ app.get(
 
   ) => {
 
-    cache.clear();
+    zipCache.clear();
+
+    historicalCache.clear();
+
+    marketRequestCache.clear();
+
+
+    progressState.clear();
 
 
     console.log(
-      "Market cache cleared"
+
+      "=============================================="
+
+    );
+
+
+    console.log(
+
+      "ALL MARKET CACHE CLEARED"
+
+    );
+
+
+    console.log(
+
+      "=============================================="
+
     );
 
 
@@ -2490,7 +3226,7 @@ app.get(
         SERVER_VERSION,
 
       message:
-        "行情缓存已清除"
+        "行情缓存、历史数据缓存、Market 请求缓存已清除"
 
     });
 
@@ -2501,7 +3237,7 @@ app.get(
 
 /*
  * ============================================================
- * 状态接口
+ * /api/status
  * ============================================================
  */
 
@@ -2546,13 +3282,18 @@ app.get(
         ),
 
         cacheSize:
-          cache.size,
+          historicalCache.size,
 
         activeDownloads:
           activeDownloads,
 
         queuedDownloads:
-          downloadQueue.length
+          downloadQueue.length,
+
+        downloadStats,
+
+        serverTime:
+          nowIso()
 
       });
 
@@ -2583,10 +3324,7 @@ app.get(
 
 /*
  * ============================================================
- * 调试接口
- *
- * 用来查看当前下载队列。
- *
+ * /api/debug
  * ============================================================
  */
 
@@ -2609,8 +3347,83 @@ app.get(
       version:
         SERVER_VERSION,
 
-      cacheSize:
-        cache.size,
+      serverTime:
+        nowIso(),
+
+      cache:{
+
+        zipCache:
+          zipCache.size,
+
+        historicalCache:
+          historicalCache.size,
+
+        marketRequestCache:
+          marketRequestCache.size
+
+      },
+
+      downloads:{
+
+        active:
+          activeDownloads,
+
+        queued:
+          downloadQueue.length,
+
+        concurrency:
+          DOWNLOAD_CONCURRENCY,
+
+        timeoutMs:
+          DOWNLOAD_TIMEOUT,
+
+        maxRetries:
+          MAX_RETRIES
+
+      },
+
+      stats:
+        downloadStats,
+
+      progress:
+        Array.from(
+          progressState.values()
+        )
+
+    });
+
+  }
+
+);
+
+
+/*
+ * ============================================================
+ * /api/progress
+ * ============================================================
+ */
+
+app.get(
+
+  "/api/progress",
+
+  (
+
+    req,
+
+    res
+
+  ) => {
+
+    return res.json({
+
+      ok:true,
+
+      version:
+        SERVER_VERSION,
+
+      serverTime:
+        nowIso(),
 
       activeDownloads:
         activeDownloads,
@@ -2618,14 +3431,63 @@ app.get(
       queuedDownloads:
         downloadQueue.length,
 
-      downloadConcurrency:
-        DOWNLOAD_CONCURRENCY,
+      progress:
+        Array.from(
+          progressState.values()
+        )
 
-      downloadTimeoutMs:
-        DOWNLOAD_TIMEOUT,
+    });
 
-      maxRetries:
-        MAX_RETRIES
+  }
+
+);
+
+
+/*
+ * ============================================================
+ * /api/health
+ *
+ * 用于检查 Render 服务是否真的正常运行。
+ * ============================================================
+ */
+
+app.get(
+
+  "/api/health",
+
+  (
+
+    req,
+
+    res
+
+  ) => {
+
+    return res.json({
+
+      ok:true,
+
+      version:
+        SERVER_VERSION,
+
+      serverTime:
+        nowIso(),
+
+      uptime:
+        process.uptime(),
+
+      memory:{
+
+        rss:
+          process.memoryUsage().rss,
+
+        heapUsed:
+          process.memoryUsage().heapUsed,
+
+        heapTotal:
+          process.memoryUsage().heapTotal
+
+      }
 
     });
 
@@ -2755,6 +3617,20 @@ app.listen(
       "最大重试：",
 
       MAX_RETRIES
+
+    );
+
+
+    console.log(
+
+      "ZIP Promise Cache：启用"
+
+    );
+
+
+    console.log(
+
+      "Market Request Sharing：启用"
 
     );
 
