@@ -9,33 +9,52 @@ app.use(express.static(__dirname));
 
 /*
  * ============================================================
- * Quant V2 · 数据服务器
+ * Quant V3.5 OOS 数据服务器
  *
  * Binance USD-M Futures
  *
- * 数据来源：
- * Binance Public Data
+ * OOS：
  *
- * 正式回测：
- * 最近 6 个完整月份
+ * 2026-09-01 00:00 UTC
+ * →
+ * 2026-09-26 00:00 UTC
  *
  * 指标预热：
- * 额外 2 个完整月份
  *
- * 例如当前是：
- * 2026-09
- *
- * 正式回测：
- * 2026-03-01
+ * 2026-07-01
  * →
  * 2026-09-01
  *
- * 指标预热：
- * 2026-01-01
- * →
- * 2026-03-01
  *
- * 当前未完成月份不会进入回测。
+ * 关键修复：
+ *
+ * 1.
+ * 不再把“当前月份开始”
+ * 当作回测结束时间。
+ *
+ *
+ * 2.
+ * 已完成月份：
+ * 使用 Binance Public Data 月度 ZIP。
+ *
+ *
+ * 3.
+ * 当前未完成月份：
+ * 使用 Binance Futures
+ * /fapi/v1/klines
+ * 直接读取。
+ *
+ *
+ * 4.
+ * 前端传入的：
+ *
+ * start
+ * end
+ * backtestStart
+ * backtestEnd
+ * warmupStart
+ *
+ * 会真正被使用。
  *
  * ============================================================
  */
@@ -45,201 +64,350 @@ const BINANCE_DATA_BASE =
   "https://data.binance.vision";
 
 
+const BINANCE_FAPI_BASE =
+  "https://fapi.binance.com";
+
+
 /*
  * ============================================================
- * 回测参数
+ * V3.5 默认 OOS 区间
  * ============================================================
  */
 
 
-/*
- * 正式回测月份
- */
-
-const BACKTEST_MONTHS = 6;
-
-
-/*
- * 指标预热月份
- */
-
-const WARMUP_MONTHS = 2;
+const DEFAULT_OOS_START =
+  Date.parse(
+    "2026-09-01T00:00:00.000Z"
+  );
 
 
-/*
- * 总数据月份
- */
+const DEFAULT_OOS_END =
+  Date.parse(
+    "2026-09-26T00:00:00.000Z"
+  );
 
-const TOTAL_MONTHS =
-  BACKTEST_MONTHS +
-  WARMUP_MONTHS;
+
+const DEFAULT_WARMUP_START =
+  Date.parse(
+    "2026-07-01T00:00:00.000Z"
+  );
 
 
 /*
  * ============================================================
  * 缓存
- *
- * 缓存的不只是最终数据，
- * 也缓存正在进行中的 Promise。
- *
- * 防止同一个币种同时发起多个重复下载。
  * ============================================================
  */
 
-const cache = new Map();
+
+const cache =
+  new Map();
 
 
 /*
  * ============================================================
- * 获取当前月份开始时间
- *
- * 例如：
- *
- * 2026-09-26
- *
- * 返回：
- *
- * 2026-09-01 00:00:00 UTC
- *
+ * 日期参数解析
  * ============================================================
  */
 
-function getCurrentMonthStart(){
 
-  const now =
-    new Date();
+function parseDateParam(
+
+  value,
+
+  fallback
+
+){
+
+  if(
+    value == null ||
+    value === ""
+  ){
+
+    return fallback;
+
+  }
 
 
-  return Date.UTC(
+  const number =
+    Number(value);
 
-    now.getUTCFullYear(),
 
-    now.getUTCMonth(),
+  if(
+    Number.isFinite(number)
+  ){
 
-    1
+    return number < 1e12
+      ? number * 1000
+      : number;
 
-  );
+  }
+
+
+  const time =
+    Date.parse(
+      String(value)
+    );
+
+
+  return Number.isFinite(time)
+    ? time
+    : NaN;
 
 }
 
 
 /*
  * ============================================================
- * 正式回测开始时间
- *
- * 当前月份往前 6 个完整月份。
- *
- * 例如：
- *
- * 当前：
- * 2026-09
- *
- * 回测：
- *
- * 2026-03-01
- *
- * 到：
- *
- * 2026-09-01
- *
+ * 获取 UTC 月初
  * ============================================================
  */
 
-function getBacktestStart(){
 
-  const now =
-    new Date();
-
-
-  return Date.UTC(
-
-    now.getUTCFullYear(),
-
-    now.getUTCMonth() -
-      BACKTEST_MONTHS,
-
-    1
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * 数据开始时间
- *
- * 正式回测开始之前，
- * 再额外预热 2 个月。
- *
- * ============================================================
- */
-
-function getDataStart(){
-
-  const now =
-    new Date();
-
-
-  return Date.UTC(
-
-    now.getUTCFullYear(),
-
-    now.getUTCMonth() -
-      BACKTEST_MONTHS -
-      WARMUP_MONTHS,
-
-    1
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * 获取月份
- *
- * offset：
- *
- * 1 = 上一个完整月份
- * 2 = 上上个完整月份
- *
- * ============================================================
- */
-
-function getMonthInfo(offset){
-
-  const now =
-    new Date();
-
+function floorUtcMonth(
+  timestamp
+){
 
   const date =
-    new Date(
+    new Date(timestamp);
 
-      Date.UTC(
 
-        now.getUTCFullYear(),
+  return Date.UTC(
 
-        now.getUTCMonth() -
-          offset,
+    date.getUTCFullYear(),
 
-        1
+    date.getUTCMonth(),
+
+    1
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * UTC 月份加减
+ * ============================================================
+ */
+
+
+function addUtcMonths(
+
+  timestamp,
+
+  delta
+
+){
+
+  const date =
+    new Date(timestamp);
+
+
+  return Date.UTC(
+
+    date.getUTCFullYear(),
+
+    date.getUTCMonth() + delta,
+
+    1
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * 获取月份范围
+ * ============================================================
+ */
+
+
+function monthRange(
+
+  startMs,
+
+  endMs
+
+){
+
+  const start =
+    floorUtcMonth(
+      startMs
+    );
+
+
+  const endMonth =
+    floorUtcMonth(
+
+      Math.max(
+
+        startMs,
+
+        endMs - 1
 
       )
 
     );
 
 
+  const result = [];
+
+
+  for(
+
+    let timestamp = start;
+
+    timestamp <= endMonth;
+
+    timestamp =
+      addUtcMonths(
+        timestamp,
+        1
+      )
+
+  ){
+
+    const date =
+      new Date(timestamp);
+
+
+    result.push({
+
+      start:
+        timestamp,
+
+      end:
+        addUtcMonths(
+          timestamp,
+          1
+        ),
+
+      year:
+        date.getUTCFullYear(),
+
+      month:
+        String(
+
+          date.getUTCMonth() + 1
+
+        ).padStart(
+          2,
+          "0"
+        )
+
+    });
+
+  }
+
+
+  return result;
+
+}
+
+
+/*
+ * ============================================================
+ * 解析回测区间
+ * ============================================================
+ */
+
+
+function resolveRange(req){
+
+  const oosStart =
+    parseDateParam(
+
+      req.query.backtestStart ??
+      req.query.start,
+
+      DEFAULT_OOS_START
+
+    );
+
+
+  const oosEnd =
+    parseDateParam(
+
+      req.query.backtestEnd ??
+      req.query.end,
+
+      DEFAULT_OOS_END
+
+    );
+
+
+  if(
+
+    !Number.isFinite(
+      oosStart
+    ) ||
+
+    !Number.isFinite(
+      oosEnd
+    ) ||
+
+    oosEnd <= oosStart
+
+  ){
+
+    throw new Error(
+
+      "日期范围错误：backtestStart/backtestEnd 必须是有效且 end > start 的日期。"
+
+    );
+
+  }
+
+
+  let warmupStart =
+    parseDateParam(
+
+      req.query.warmupStart,
+
+      DEFAULT_WARMUP_START
+
+    );
+
+
+  if(
+    !Number.isFinite(
+      warmupStart
+    )
+  ){
+
+    warmupStart =
+      oosStart -
+      62 *
+      24 *
+      60 *
+      60 *
+      1000;
+
+  }
+
+
+  if(
+    warmupStart >= oosStart
+  ){
+
+    throw new Error(
+
+      "日期范围错误：warmupStart 必须早于 backtestStart。"
+
+    );
+
+  }
+
+
   return {
 
-    year:
-      date.getUTCFullYear(),
+    warmupStart,
 
-    month:
-      String(
-        date.getUTCMonth() + 1
-      ).padStart(2,"0")
+    oosStart,
+
+    oosEnd
 
   };
 
@@ -248,11 +416,12 @@ function getMonthInfo(offset){
 
 /*
  * ============================================================
- * 构造 Binance 月度 K 线地址
+ * Binance 月度 ZIP 地址
  * ============================================================
  */
 
-function buildUrl(
+
+function buildMonthlyUrl(
 
   symbol,
 
@@ -264,25 +433,15 @@ function buildUrl(
 
 ){
 
-  const fileName =
-    `${symbol}-${interval}-${year}-${month}.zip`;
-
-
   return (
 
-    BINANCE_DATA_BASE +
+    `${BINANCE_DATA_BASE}` +
 
-    "/data/futures/um/monthly/klines/" +
+    `/data/futures/um/monthly/klines/` +
 
-    symbol +
+    `${symbol}/${interval}/` +
 
-    "/" +
-
-    interval +
-
-    "/" +
-
-    fileName
+    `${symbol}-${interval}-${year}-${month}.zip`
 
   );
 
@@ -295,11 +454,15 @@ function buildUrl(
  * ============================================================
  */
 
+
 function parseCsv(text){
 
   if(
+
     typeof text !== "string" ||
+
     !text.trim()
+
   ){
 
     return [];
@@ -317,12 +480,16 @@ function parseCsv(text){
 
 
   for(
-    const line of lines
+    const line
+    of lines
   ){
 
     if(
+
       !line ||
+
       !line.trim()
+
     ){
 
       continue;
@@ -334,18 +501,20 @@ function parseCsv(text){
       line.split(",");
 
 
+    const openTime =
+      Number(
+        row[0]
+      );
+
+
     /*
-     * Binance CSV 第一行可能是表头。
-     *
-     * 第一列不是数字时直接跳过。
+     * 跳过 CSV 表头
      */
 
-    const openTime =
-      Number(row[0]);
-
-
     if(
-      !Number.isFinite(openTime)
+      !Number.isFinite(
+        openTime
+      )
     ){
 
       continue;
@@ -354,27 +523,39 @@ function parseCsv(text){
 
 
     const open =
-      Number(row[1]);
+      Number(
+        row[1]
+      );
 
 
     const high =
-      Number(row[2]);
+      Number(
+        row[2]
+      );
 
 
     const low =
-      Number(row[3]);
+      Number(
+        row[3]
+      );
 
 
     const close =
-      Number(row[4]);
+      Number(
+        row[4]
+      );
 
 
     const volume =
-      Number(row[5]);
+      Number(
+        row[5]
+      );
 
 
     const closeTime =
-      Number(row[6]);
+      Number(
+        row[6]
+      );
 
 
     if(
@@ -397,10 +578,6 @@ function parseCsv(text){
 
     }
 
-
-    /*
-     * 基本数据合法性检查
-     */
 
     if(
 
@@ -449,14 +626,115 @@ function parseCsv(text){
 
 /*
  * ============================================================
- * 解压 Binance ZIP
+ * Binance API K线解析
  * ============================================================
  */
 
-function extractZipCsv(buffer){
+
+function parseKlineRows(rows){
+
+  if(
+    !Array.isArray(rows)
+  ){
+
+    return [];
+
+  }
+
+
+  return rows
+
+    .map(
+
+      row => ({
+
+        openTime:
+          Number(row[0]),
+
+        open:
+          Number(row[1]),
+
+        high:
+          Number(row[2]),
+
+        low:
+          Number(row[3]),
+
+        close:
+          Number(row[4]),
+
+        volume:
+          Number(row[5]),
+
+        closeTime:
+          Number(row[6])
+
+      })
+
+    )
+
+    .filter(
+
+      row =>
+
+        Number.isFinite(
+          row.openTime
+        ) &&
+
+        Number.isFinite(
+          row.open
+        ) &&
+
+        Number.isFinite(
+          row.high
+        ) &&
+
+        Number.isFinite(
+          row.low
+        ) &&
+
+        Number.isFinite(
+          row.close
+        ) &&
+
+        Number.isFinite(
+          row.volume
+        ) &&
+
+        Number.isFinite(
+          row.closeTime
+        ) &&
+
+        row.open > 0 &&
+
+        row.high > 0 &&
+
+        row.low > 0 &&
+
+        row.close > 0 &&
+
+        row.high >= row.low
+
+    );
+
+}
+
+
+/*
+ * ============================================================
+ * ZIP 解压
+ * ============================================================
+ */
+
+
+function extractZipCsv(
+  buffer
+){
 
   const zip =
-    new AdmZip(buffer);
+    new AdmZip(
+      buffer
+    );
 
 
   const entries =
@@ -486,24 +764,25 @@ function extractZipCsv(buffer){
   }
 
 
-  const text =
+  return parseCsv(
+
     csvEntry
       .getData()
-      .toString("utf8");
+      .toString("utf8")
 
-
-  return parseCsv(text);
+  );
 
 }
 
 
 /*
  * ============================================================
- * 下载一个月数据
+ * 下载已完成月份
  * ============================================================
  */
 
-async function downloadMonth(
+
+async function downloadMonthly(
 
   symbol,
 
@@ -516,7 +795,7 @@ async function downloadMonth(
 ){
 
   const url =
-    buildUrl(
+    buildMonthlyUrl(
 
       symbol,
 
@@ -530,7 +809,7 @@ async function downloadMonth(
 
 
   console.log(
-    "Downloading:",
+    "Downloading monthly:",
     url
   );
 
@@ -541,14 +820,20 @@ async function downloadMonth(
   try{
 
     response =
-      await fetch(url);
+      await fetch(
+        url
+      );
 
   }catch(error){
 
     throw new Error(
 
       `${symbol} ${interval} ` +
-      `${year}-${month} 下载失败：` +
+
+      `${year}-${month} ` +
+
+      `月度数据下载失败：` +
+
       `${error.message}`
 
     );
@@ -557,12 +842,7 @@ async function downloadMonth(
 
 
   /*
-   * 404：
-   *
-   * 代表这个币种当月没有数据，
-   * 比如尚未上市。
-   *
-   * 不应该让整个回测失败。
+   * 币种当月不存在
    */
 
   if(
@@ -571,7 +851,7 @@ async function downloadMonth(
 
     console.log(
 
-      "Not found:",
+      "Monthly not found:",
 
       symbol,
 
@@ -596,7 +876,9 @@ async function downloadMonth(
     throw new Error(
 
       `${symbol} ${interval} ` +
+
       `${year}-${month} ` +
+
       `HTTP ${response.status}`
 
     );
@@ -608,12 +890,12 @@ async function downloadMonth(
     await response.arrayBuffer();
 
 
-  const buffer =
-    Buffer.from(arrayBuffer);
-
-
   return extractZipCsv(
-    buffer
+
+    Buffer.from(
+      arrayBuffer
+    )
+
   );
 
 }
@@ -621,29 +903,271 @@ async function downloadMonth(
 
 /*
  * ============================================================
- * 去重
+ * 获取当前未完成月份 K线
  *
- * Binance K 线使用 openTime 作为唯一时间。
+ * 使用 Binance USD-M Futures
+ * /fapi/v1/klines
+ *
+ * 最大 1500 根 / 请求。
  * ============================================================
  */
 
-function deduplicateKlines(data){
+
+async function fetchApiKlines(
+
+  symbol,
+
+  interval,
+
+  startTime,
+
+  endTime
+
+){
+
+  const limit =
+    1500;
+
+
+  const all = [];
+
+
+  let cursor =
+    startTime;
+
+
+  let safety =
+    0;
+
+
+  while(
+
+    cursor < endTime &&
+
+    safety < 20
+
+  ){
+
+    safety++;
+
+
+    const url =
+      new URL(
+
+        `${BINANCE_FAPI_BASE}` +
+
+        `/fapi/v1/klines`
+
+      );
+
+
+    url.searchParams.set(
+
+      "symbol",
+
+      symbol
+
+    );
+
+
+    url.searchParams.set(
+
+      "interval",
+
+      interval
+
+    );
+
+
+    url.searchParams.set(
+
+      "startTime",
+
+      String(cursor)
+
+    );
+
+
+    url.searchParams.set(
+
+      "endTime",
+
+      String(
+
+        endTime - 1
+
+      )
+
+    );
+
+
+    url.searchParams.set(
+
+      "limit",
+
+      String(limit)
+
+    );
+
+
+    console.log(
+
+      "Downloading API:",
+
+      url.toString()
+
+    );
+
+
+    let response;
+
+
+    try{
+
+      response =
+        await fetch(
+          url
+        );
+
+    }catch(error){
+
+      throw new Error(
+
+        `${symbol} ${interval} ` +
+
+        `API 下载失败：` +
+
+        `${error.message}`
+
+      );
+
+    }
+
+
+    if(
+      !response.ok
+    ){
+
+      const text =
+        await response
+          .text()
+          .catch(
+            () => ""
+          );
+
+
+      throw new Error(
+
+        `${symbol} ${interval} ` +
+
+        `API HTTP ${response.status}` +
+
+        (
+
+          text
+
+            ? `：${text.slice(0,200)}`
+
+            : ""
+
+        )
+
+      );
+
+    }
+
+
+    const rows =
+      await response.json();
+
+
+    const candles =
+      parseKlineRows(
+        rows
+      );
+
+
+    if(
+      !candles.length
+    ){
+
+      break;
+
+    }
+
+
+    all.push(
+      ...candles
+    );
+
+
+    const last =
+      candles[
+        candles.length - 1
+      ].openTime;
+
+
+    if(
+      last < cursor
+    ){
+
+      break;
+
+    }
+
+
+    cursor =
+      last + 1;
+
+
+    if(
+      candles.length < limit
+    ){
+
+      break;
+
+    }
+
+  }
+
+
+  return all;
+
+}
+
+
+/*
+ * ============================================================
+ * 去重
+ * ============================================================
+ */
+
+
+function deduplicateKlines(
+  data
+){
 
   const map =
     new Map();
 
 
   for(
-    const row of data
+    const row
+    of data
   ){
 
     if(
-      !map.has(row.openTime)
+      !map.has(
+        row.openTime
+      )
     ){
 
       map.set(
+
         row.openTime,
+
         row
+
       );
 
     }
@@ -656,6 +1180,7 @@ function deduplicateKlines(data){
   ).sort(
 
     (a,b) =>
+
       a.openTime -
       b.openTime
 
@@ -666,133 +1191,159 @@ function deduplicateKlines(data){
 
 /*
  * ============================================================
- * 获取历史 K 线
+ * 获取历史 K线
  *
- * 结构：
+ * 已完成月份：
+ * monthly ZIP
  *
- * 预热 2 个月
- * +
- * 正式回测 6 个月
- *
- * 总共 8 个完整月份。
- *
- * 当前月份不参与。
+ * 当前未完成月份：
+ * Futures API
  * ============================================================
  */
+
 
 async function fetchHistoricalKlines(
 
   symbol,
 
-  interval
+  interval,
+
+  range
 
 ){
 
+  const {
+
+    warmupStart,
+
+    oosEnd
+
+  } =
+    range;
+
+
   const cacheKey =
-    `${symbol}_${interval}`;
 
+    `${symbol}_` +
 
-  /*
-   * 已经存在缓存。
-   */
+    `${interval}_` +
+
+    `${warmupStart}_` +
+
+    `${oosEnd}`;
+
 
   if(
-    cache.has(cacheKey)
+    cache.has(
+      cacheKey
+    )
   ){
 
-    return cache.get(cacheKey);
+    return cache.get(
+      cacheKey
+    );
 
   }
 
 
-  /*
-   * 先创建 Promise 放入缓存。
-   *
-   * 这样即使同时请求同一个数据，
-   * 也不会重复下载。
-   */
-
   const promise =
     (async() => {
 
-      const dataStart =
-        getDataStart();
+      const months =
+        monthRange(
 
+          warmupStart,
 
-      const currentMonthStart =
-        getCurrentMonthStart();
-
-
-      /*
-       * 每个月单独下载。
-       *
-       * 使用 Promise.all 并发下载，
-       * 加快速度。
-       */
-
-      const jobs = [];
-
-
-      for(
-
-        let offset = 1;
-
-        offset <= TOTAL_MONTHS;
-
-        offset++
-
-      ){
-
-        const {
-          year,
-          month
-        } =
-          getMonthInfo(offset);
-
-
-        jobs.push(
-
-          downloadMonth(
-
-            symbol,
-
-            interval,
-
-            year,
-
-            month
-
-          )
+          oosEnd
 
         );
 
-      }
-
-
-      const monthlyData =
-        await Promise.all(
-          jobs
-        );
-
-
-      /*
-       * 合并所有月份。
-       */
 
       let all = [];
 
 
       for(
-        const rows
-        of monthlyData
+        const month
+        of months
       ){
 
+        const monthEnd =
+          Math.min(
+
+            month.end,
+
+            oosEnd
+
+          );
+
+
+        /*
+         * 当前月份还没有完整月度归档。
+         */
+
+        const isCurrentMonth =
+
+          month.end >
+          Date.now();
+
+
         if(
-          rows.length
+          isCurrentMonth
         ){
 
+          const start =
+            Math.max(
+
+              warmupStart,
+
+              month.start
+
+            );
+
+
+          const rows =
+            await fetchApiKlines(
+
+              symbol,
+
+              interval,
+
+              start,
+
+              monthEnd
+
+            );
+
+
           all =
-            all.concat(rows);
+            all.concat(
+              rows
+            );
+
+        }else{
+
+          /*
+           * 已完成月份使用月度 ZIP。
+           */
+
+          const rows =
+            await downloadMonthly(
+
+              symbol,
+
+              interval,
+
+              month.year,
+
+              month.month
+
+            );
+
+
+          all =
+            all.concat(
+              rows
+            );
 
         }
 
@@ -800,73 +1351,64 @@ async function fetchHistoricalKlines(
 
 
       /*
-       * 排序 + 去重。
-       */
-
-      const unique =
-        deduplicateKlines(
-          all
-        );
-
-
-      /*
-       * 最终时间过滤。
-       *
-       * 必须满足：
-       *
-       * >= 数据开始时间
-       *
-       * <
-       * 当前月份开始
-       *
+       * 去重 + 时间过滤
        */
 
       const result =
-        unique.filter(
+
+        deduplicateKlines(
+          all
+        )
+
+        .filter(
 
           row =>
 
             row.openTime >=
-              dataStart &&
+              warmupStart &&
 
             row.openTime <
-              currentMonthStart
+              oosEnd
 
         );
 
 
       if(
-        result.length === 0
+        !result.length
       ){
 
         throw new Error(
 
           `${symbol} ${interval}：` +
-          `没有历史K线`
+
+          `指定日期范围内没有历史K线`
 
         );
 
       }
 
 
-      /*
-       * 最后再做一次时间排序。
-       */
+      const first =
+        result[0].openTime;
 
-      result.sort(
 
-        (a,b) =>
-          a.openTime -
-          b.openTime
-
-      );
+      const last =
+        result[
+          result.length - 1
+        ].openTime;
 
 
       console.log(
 
         `${symbol} ${interval}: ` +
 
-        `${result.length} candles`
+        `${result.length} candles, ` +
+
+        `${new Date(first).toISOString()} ` +
+
+        `→ ` +
+
+        `${new Date(last).toISOString()}`
 
       );
 
@@ -877,8 +1419,11 @@ async function fetchHistoricalKlines(
 
 
   cache.set(
+
     cacheKey,
+
     promise
+
   );
 
 
@@ -888,25 +1433,18 @@ async function fetchHistoricalKlines(
       await promise;
 
 
-    /*
-     * 下载完成以后，
-     * 将 Promise 换成真正的数据。
-     */
-
     cache.set(
+
       cacheKey,
+
       result
+
     );
 
 
     return result;
 
   }catch(error){
-
-    /*
-     * 如果下载失败，
-     * 不要把失败的 Promise 永久留在缓存。
-     */
 
     cache.delete(
       cacheKey
@@ -922,55 +1460,56 @@ async function fetchHistoricalKlines(
 
 /*
  * ============================================================
- * 时间信息
+ * Meta
  * ============================================================
  */
 
-function getMeta(){
 
-  const dataStart =
-    getDataStart();
-
-
-  const backtestStart =
-    getBacktestStart();
-
-
-  const backtestEnd =
-    getCurrentMonthStart();
-
+function getMeta(
+  range
+){
 
   return {
 
-    backtestMonths:
-      BACKTEST_MONTHS,
+    oos:
+      true,
 
-    warmupMonths:
-      WARMUP_MONTHS,
+    source:
+      "Binance USD-M Futures Public Data + Futures Kline API",
 
-    totalDataMonths:
-      TOTAL_MONTHS,
+    dataStart:
+      range.warmupStart,
 
-    dataStart,
+    backtestStart:
+      range.oosStart,
 
-    backtestStart,
-
-    backtestEnd,
+    backtestEnd:
+      range.oosEnd,
 
     dataStartISO:
       new Date(
-        dataStart
+        range.warmupStart
       ).toISOString(),
 
     backtestStartISO:
       new Date(
-        backtestStart
+        range.oosStart
       ).toISOString(),
 
     backtestEndISO:
       new Date(
-        backtestEnd
-      ).toISOString()
+        range.oosEnd
+      ).toISOString(),
+
+    intervals:[
+
+      "4h",
+
+      "1h",
+
+      "15m"
+
+    ]
 
   };
 
@@ -981,11 +1520,10 @@ function getMeta(){
  * ============================================================
  * 行情接口
  *
- * GET
- *
  * /api/market?symbol=SOLUSDT
  * ============================================================
  */
+
 
 app.get(
 
@@ -1004,14 +1542,11 @@ app.get(
       const symbol =
         String(
 
-          req.query.symbol || ""
+          req.query.symbol ||
+          ""
 
         ).toUpperCase();
 
-
-      /*
-       * 基础 symbol 检查。
-       */
 
       if(
 
@@ -1037,14 +1572,27 @@ app.get(
       }
 
 
+      const range =
+        resolveRange(
+          req
+        );
+
+
       console.log(
+
         "Market request:",
-        symbol
+
+        symbol,
+
+        getMeta(
+          range
+        )
+
       );
 
 
       /*
-       * 三个周期并发读取。
+       * 三个周期并发
        */
 
       const [
@@ -1063,7 +1611,9 @@ app.get(
 
             symbol,
 
-            "4h"
+            "4h",
+
+            range
 
           ),
 
@@ -1071,7 +1621,9 @@ app.get(
 
             symbol,
 
-            "1h"
+            "1h",
+
+            range
 
           ),
 
@@ -1079,7 +1631,9 @@ app.get(
 
             symbol,
 
-            "15m"
+            "15m",
+
+            range
 
           )
 
@@ -1087,8 +1641,73 @@ app.get(
 
 
       /*
-       * 返回。
+       * OOS 完整性检查
+       *
+       * 三个周期都必须有
+       * 2026-09-01 之后的数据。
        */
+
+      const datasets = [
+
+        ["4h", data4h],
+
+        ["1h", data1h],
+
+        ["15m", data15m]
+
+      ];
+
+
+      for(
+        const [
+          name,
+          data
+        ]
+        of datasets
+      ){
+
+        const oosRows =
+          data.filter(
+
+            row =>
+
+              row.openTime >=
+                range.oosStart &&
+
+              row.openTime <
+                range.oosEnd
+
+          );
+
+
+        if(
+          !oosRows.length
+        ){
+
+          throw new Error(
+
+            `${symbol} ${name}：` +
+
+            `OOS 区间 ` +
+
+            `${new Date(
+              range.oosStart
+            ).toISOString()} ` +
+
+            `→ ` +
+
+            `${new Date(
+              range.oosEnd
+            ).toISOString()} ` +
+
+            `没有可用 K 线。`
+
+          );
+
+        }
+
+      }
+
 
       return res.json({
 
@@ -1097,7 +1716,9 @@ app.get(
         symbol,
 
         meta:
-          getMeta(),
+          getMeta(
+            range
+          ),
 
         data:{
 
@@ -1156,6 +1777,7 @@ app.get(
  * ============================================================
  */
 
+
 app.get(
 
   "/api/cache/clear",
@@ -1172,7 +1794,9 @@ app.get(
 
 
     console.log(
+
       "Market cache cleared"
+
     );
 
 
@@ -1198,6 +1822,7 @@ app.get(
  * ============================================================
  */
 
+
 app.get(
 
   "/api/status",
@@ -1210,52 +1835,49 @@ app.get(
 
   ) => {
 
-    const meta =
-      getMeta();
+    try{
+
+      const range =
+        resolveRange(
+          req
+        );
 
 
-    return res.json({
+      return res.json({
 
-      ok:true,
+        ok:true,
 
-      source:
-        "Binance Public Data",
+        source:
+          "Binance USD-M Futures Public Data + Futures Kline API",
 
-      market:
-        "USD-M Futures",
+        market:
+          "USD-M Futures",
 
-      backtestMonths:
-        BACKTEST_MONTHS,
+        ...getMeta(
+          range
+        ),
 
-      warmupMonths:
-        WARMUP_MONTHS,
+        cacheSize:
+          cache.size
 
-      totalDataMonths:
-        TOTAL_MONTHS,
+      });
 
-      dataStart:
-        meta.dataStartISO,
+    }catch(error){
 
-      backtestStart:
-        meta.backtestStartISO,
+      return res
 
-      backtestEnd:
-        meta.backtestEndISO,
+        .status(400)
 
-      intervals:[
+        .json({
 
-        "4h",
+          ok:false,
 
-        "1h",
+          error:
+            error.message
 
-        "15m"
+        });
 
-      ],
-
-      cacheSize:
-        cache.size
-
-    });
+    }
 
   }
 
@@ -1267,6 +1889,7 @@ app.get(
  * 前端
  * ============================================================
  */
+
 
 app.get(
 
@@ -1303,6 +1926,7 @@ app.get(
  * ============================================================
  */
 
+
 const PORT =
   process.env.PORT || 3000;
 
@@ -1321,34 +1945,36 @@ app.listen(
 
     );
 
+
     console.log(
 
-      `正式回测：` +
+      `V3.5 OOS：` +
 
       new Date(
-        getBacktestStart()
+        DEFAULT_OOS_START
       ).toISOString() +
 
       " → " +
 
       new Date(
-        getCurrentMonthStart()
+        DEFAULT_OOS_END
       ).toISOString()
 
     );
+
 
     console.log(
 
       `指标预热：` +
 
       new Date(
-        getDataStart()
+        DEFAULT_WARMUP_START
       ).toISOString() +
 
       " → " +
 
       new Date(
-        getBacktestStart()
+        DEFAULT_OOS_START
       ).toISOString()
 
     );
