@@ -1,13 +1,14 @@
 {
   "name": "quant-v2-backtest",
   "version": "1.0.0",
-  "description": "Multi-timeframe crypto futures backtesting tool",
+  "description": "Quant V2 multi-timeframe crypto futures backtest",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "adm-zip": "^0.5.16",
+    "express": "^5.1.0"
   },
   "engines": {
     "node": ">=18"
