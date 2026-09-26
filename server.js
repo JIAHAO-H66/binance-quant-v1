@@ -40,10 +40,6 @@ const BACKTEST_MONTHS = 6;
 
 /*
  * 指标预热月份
- *
- * EMA200 需要比较长的历史。
- *
- * 这里额外取 2 个月。
  */
 
 const WARMUP_MONTHS = 2;
@@ -80,18 +76,15 @@ function getCurrentMonthStart(){
  * ============================================================
  * 正式回测开始时间
  *
- * 当前月份往前 6 个完整月份。
+ * 例如当前为 2026-09：
  *
- * 例如：
- *
- * 2026-09
- *
- * 回测：
+ * 正式回测：
  *
  * 2026-03-01
  * 到
  * 2026-09-01
  *
+ * 当前 2026-09 月不参与。
  * ============================================================
  */
 
@@ -114,7 +107,19 @@ function getBacktestStart(){
  * 数据开始时间
  *
  * 正式回测开始之前，
- * 再额外取 WARMUP_MONTHS。
+ * 再额外取 2 个月指标预热。
+ *
+ * 例如：
+ *
+ * 正式：
+ * 2026-03
+ * ~
+ * 2026-08
+ *
+ * 预热：
+ * 2026-01
+ * ~
+ * 2026-02
  * ============================================================
  */
 
@@ -438,15 +443,16 @@ async function downloadMonth(
 
 /*
  * ============================================================
- * 获取完整历史数据
+ * 获取历史数据
  *
- * 这里不再限制 1000 根。
+ * 正式回测：
+ * 6个月
  *
- * 例如 15M：
+ * 指标预热：
+ * 2个月
  *
- * 6个月 ≈ 17,000+ 根
- *
- * 这是正常的。
+ * 当前月份：
+ * 完全排除
  * ============================================================
  */
 
@@ -480,19 +486,27 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 从当前月份往过去找。
+   * 总月份：
    *
-   * 读取：
-   *
-   * 正式回测 6 个月
+   * 6个月正式回测
    * +
-   * 预热 2 个月
+   * 2个月预热
+   *
+   * = 8个月
    */
 
   const totalMonths =
     BACKTEST_MONTHS +
     WARMUP_MONTHS;
 
+
+  /*
+   * offset = 1
+   *
+   * 从上个月开始。
+   *
+   * 当前月份永远不下载。
+   */
 
   for(
     let offset = 1;
@@ -540,7 +554,7 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 排序
+   * 按时间排序
    */
 
   all.sort(
@@ -584,15 +598,17 @@ async function fetchHistoricalKlines(
 
 
   /*
-   * 只保留：
+   * 最终保留：
    *
-   * 预热开始
+   * dataStart
    * 到
-   * 当前月份开始
+   * currentMonthStart
    *
-   * 注意：
+   * 也就是：
    *
-   * 当前未完成月份不进入正式回测。
+   * 2个月预热
+   * +
+   * 6个月正式回测
    */
 
   const result =
@@ -719,6 +735,9 @@ app.get(
           warmupMonths:
             WARMUP_MONTHS,
 
+          dataStart:
+            getDataStart(),
+
           backtestStart:
             getBacktestStart(),
 
@@ -826,6 +845,11 @@ app.get(
 
       warmupMonths:
         WARMUP_MONTHS,
+
+      dataStart:
+        new Date(
+          getDataStart()
+        ).toISOString(),
 
       backtestStart:
         new Date(
