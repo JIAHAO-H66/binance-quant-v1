@@ -9,47 +9,23 @@ app.use(express.static(__dirname));
 
 /*
  * ============================================================
- * Quant V3.5.1 · OOS 数据服务器
+ * Quant V3.7.4 · OOS 数据服务器
  *
  * Binance USD-M Futures
  *
+ * 数据源：
  *
- * 重要：
+ *     Binance Public Data
+ *     https://data.binance.vision
  *
- * 本版本完全不使用：
+ * 数据方式：
+ *
+ *     完整月份 → Monthly ZIP
+ *     不完整月份 → Daily ZIP
+ *
+ * 不使用：
  *
  *     fapi.binance.com
- *
- *
- * 所有历史数据统一从：
- *
- *     data.binance.vision
- *
- * 获取。
- *
- *
- * 已完成月份：
- *
- *     monthly ZIP
- *
- *
- * 当前月份：
- *
- *     daily ZIP
- *
- *
- * OOS：
- *
- *     2026-09-01 00:00 UTC
- *     →
- *     2026-09-26 00:00 UTC
- *
- *
- * 指标预热：
- *
- *     2026-07-01
- *     →
- *     2026-09-01
  *
  * ============================================================
  */
@@ -67,9 +43,36 @@ const BINANCE_DATA_BASE =
 
 /*
  * ============================================================
+ * 版本
+ * ============================================================
+ */
+
+const SERVER_VERSION =
+  "V3.7.4";
+
+
+/*
+ * ============================================================
  * 固定 OOS 区间
  *
- * V3.5.1 测试阶段冻结。
+ * 本测试阶段：
+ *
+ * OOS：
+ *
+ * 2026-09-01
+ * →
+ * 2026-09-26
+ *
+ * 注意：
+ *
+ * backtestEnd 为排他时间。
+ *
+ * 所以实际上使用：
+ *
+ * 2026-09-01 00:00
+ * →
+ * 2026-09-25 23:59...
+ *
  * ============================================================
  */
 
@@ -85,10 +88,180 @@ const DEFAULT_OOS_END =
   );
 
 
+/*
+ * ============================================================
+ * Warmup
+ *
+ * 2026-07-01
+ * →
+ * 2026-09-01
+ *
+ * ============================================================
+ */
+
 const DEFAULT_WARMUP_START =
   Date.parse(
     "2026-07-01T00:00:00.000Z"
   );
+
+
+/*
+ * ============================================================
+ * 下载控制
+ *
+ * 非常重要：
+ *
+ * V3.5.1 会一次性发送大量 Daily ZIP 请求。
+ *
+ * 现在改成全局下载队列。
+ *
+ * 同时最多：
+ *
+ *     4 个 ZIP
+ *
+ * 防止 Render：
+ *
+ *     CPU / RAM / Socket
+ *
+ * 被大量并发请求拖死。
+ *
+ * ============================================================
+ */
+
+const DOWNLOAD_CONCURRENCY =
+  4;
+
+
+/*
+ * 下载超时时间：
+ *
+ * 60 秒
+ *
+ * 如果 Binance 某个请求长时间没有响应，
+ * 自动中止并重试。
+ *
+ * ============================================================
+ */
+
+const DOWNLOAD_TIMEOUT =
+  60 * 1000;
+
+
+/*
+ * 最大重试次数
+ *
+ * 总共最多尝试：
+ *
+ *     1 + 2 = 3 次
+ *
+ * ============================================================
+ */
+
+const MAX_RETRIES =
+  2;
+
+
+/*
+ * ============================================================
+ * 下载队列状态
+ * ============================================================
+ */
+
+let activeDownloads =
+  0;
+
+
+const downloadQueue =
+  [];
+
+
+/*
+ * ============================================================
+ * 下载队列处理
+ * ============================================================
+ */
+
+function processDownloadQueue(){
+
+  while(
+
+    activeDownloads <
+      DOWNLOAD_CONCURRENCY &&
+
+    downloadQueue.length > 0
+
+  ){
+
+    const job =
+      downloadQueue.shift();
+
+
+    activeDownloads++;
+
+
+    Promise.resolve()
+
+      .then(
+        job.task
+      )
+
+      .then(
+        job.resolve
+      )
+
+      .catch(
+        job.reject
+      )
+
+      .finally(
+
+        () => {
+
+          activeDownloads--;
+
+          processDownloadQueue();
+
+        }
+
+      );
+
+  }
+
+}
+
+
+/*
+ * ============================================================
+ * 加入下载队列
+ * ============================================================
+ */
+
+function enqueueDownload(
+  task
+){
+
+  return new Promise(
+
+    (resolve, reject) => {
+
+      downloadQueue.push({
+
+        task,
+
+        resolve,
+
+        reject
+
+      });
+
+
+      processDownloadQueue();
+
+    }
+
+  );
+
+}
 
 
 /*
@@ -323,7 +496,7 @@ function monthRange(
 
 /*
  * ============================================================
- * 获取某个月的日期列表
+ * 获取日期列表
  * ============================================================
  */
 
@@ -345,20 +518,20 @@ function dayRange(
     1000;
 
 
+  const startDate =
+    new Date(
+      startMs
+    );
+
+
   let cursor =
     Date.UTC(
 
-      new Date(
-        startMs
-      ).getUTCFullYear(),
+      startDate.getUTCFullYear(),
 
-      new Date(
-        startMs
-      ).getUTCMonth(),
+      startDate.getUTCMonth(),
 
-      new Date(
-        startMs
-      ).getUTCDate()
+      startDate.getUTCDate()
 
     );
 
@@ -424,7 +597,7 @@ function dayRange(
 
 /*
  * ============================================================
- * OOS / Warmup 参数
+ * OOS / Warmup
  * ============================================================
  */
 
@@ -530,7 +703,7 @@ function resolveRange(req){
 
 /*
  * ============================================================
- * 月度 ZIP URL
+ * Monthly ZIP URL
  * ============================================================
  */
 
@@ -565,7 +738,7 @@ function buildMonthlyUrl(
 
 /*
  * ============================================================
- * 每日 ZIP URL
+ * Daily ZIP URL
  * ============================================================
  */
 
@@ -652,14 +825,21 @@ function parseCsv(text){
       line.split(",");
 
 
-    const openTime =
+    /*
+     * Binance Futures CSV 第一列：
+     *
+     * Open time
+     */
+
+    let openTime =
       Number(
         row[0]
       );
 
 
     /*
-     * 跳过 CSV 表头
+     * 如果第一列不是数字，
+     * 认为是 CSV 表头。
      */
 
     if(
@@ -669,6 +849,25 @@ function parseCsv(text){
     ){
 
       continue;
+
+    }
+
+
+    /*
+     * 兼容微秒时间戳。
+     *
+     * Futures 通常为毫秒，
+     * 但这里做兼容处理。
+     */
+
+    if(
+      openTime > 1e15
+    ){
+
+      openTime =
+        Math.floor(
+          openTime / 1000
+        );
 
     }
 
@@ -730,10 +929,6 @@ function parseCsv(text){
     }
 
 
-    /*
-     * 基础合法性
-     */
-
     if(
 
       open <= 0 ||
@@ -744,7 +939,9 @@ function parseCsv(text){
 
       close <= 0 ||
 
-      high < low
+      high < low ||
+
+      low > high
 
     ){
 
@@ -839,7 +1036,36 @@ function extractZipCsv(
 
 /*
  * ============================================================
- * 下载 ZIP
+ * Sleep
+ * ============================================================
+ */
+
+function sleep(
+  ms
+){
+
+  return new Promise(
+    resolve =>
+      setTimeout(
+        resolve,
+        ms
+      )
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * 下载单个 ZIP
+ *
+ * 增加：
+ *
+ * 1. 超时
+ * 2. 自动重试
+ * 3. 429 / 5xx 重试
+ * 4. 下载队列
+ *
  * ============================================================
  */
 
@@ -851,90 +1077,266 @@ async function downloadZip(
 
 ){
 
-  console.log(
+  return enqueueDownload(
 
-    "Downloading:",
+    async() => {
 
-    url
-
-  );
-
-
-  let response;
+      let lastError =
+        null;
 
 
-  try{
+      for(
 
-    response =
-      await fetch(
-        url
+        let attempt = 0;
+
+        attempt <= MAX_RETRIES;
+
+        attempt++
+
+      ){
+
+        let controller =
+          null;
+
+
+        let timeout =
+          null;
+
+
+        try{
+
+          console.log(
+
+            `[DOWNLOAD ${attempt + 1}/${MAX_RETRIES + 1}]`,
+
+            description
+
+          );
+
+
+          controller =
+            new AbortController();
+
+
+          timeout =
+            setTimeout(
+
+              () => {
+
+                controller.abort();
+
+              },
+
+              DOWNLOAD_TIMEOUT
+
+            );
+
+
+          const response =
+            await fetch(
+
+              url,
+
+              {
+
+                signal:
+                  controller.signal
+
+              }
+
+            );
+
+
+          clearTimeout(
+            timeout
+          );
+
+
+          /*
+           * ==================================================
+           * 404
+           *
+           * 代表文件不存在。
+           *
+           * 例如：
+           *
+           * 某币种当时还没有上市
+           *
+           * 或当天 archive 尚未存在。
+           *
+           * ==================================================
+           */
+
+          if(
+            response.status === 404
+          ){
+
+            console.log(
+
+              `[404]`,
+
+              description
+
+            );
+
+
+            return [];
+
+          }
+
+
+          /*
+           * ==================================================
+           * 429 / 5xx
+           *
+           * 重试。
+           * ==================================================
+           */
+
+          if(
+
+            response.status === 429 ||
+
+            response.status >= 500
+
+          ){
+
+            throw new Error(
+
+              `HTTP ${response.status}`
+
+            );
+
+          }
+
+
+          if(
+            !response.ok
+          ){
+
+            throw new Error(
+
+              `HTTP ${response.status}`
+
+            );
+
+          }
+
+
+          const arrayBuffer =
+            await response.arrayBuffer();
+
+
+          const buffer =
+            Buffer.from(
+              arrayBuffer
+            );
+
+
+          const rows =
+            extractZipCsv(
+              buffer
+            );
+
+
+          console.log(
+
+            `[OK]`,
+
+            description,
+
+            `candles=${rows.length}`
+
+          );
+
+
+          return rows;
+
+        }catch(error){
+
+          if(
+            timeout
+          ){
+
+            clearTimeout(
+              timeout
+            );
+
+          }
+
+
+          lastError =
+            error;
+
+
+          console.error(
+
+            `[DOWNLOAD ERROR]`,
+
+            description,
+
+            error.message
+
+          );
+
+
+          if(
+            attempt >= MAX_RETRIES
+          ){
+
+            break;
+
+          }
+
+
+          /*
+           * 指数退避：
+           *
+           * 第一次：
+           * 2 秒
+           *
+           * 第二次：
+           * 4 秒
+           */
+
+          const waitMs =
+            2000 *
+            Math.pow(
+              2,
+              attempt
+            );
+
+
+          console.log(
+
+            `[RETRY]`,
+
+            description,
+
+            `${waitMs}ms`
+
+          );
+
+
+          await sleep(
+            waitMs
+          );
+
+        }
+
+      }
+
+
+      throw new Error(
+
+        `${description} 下载失败：` +
+
+        `${lastError?.message || "未知错误"}`
+
       );
 
-  }catch(error){
+    }
 
-    throw new Error(
-
-      `${description} 下载失败：` +
-
-      `${error.message}`
-
-    );
-
-  }
-
-
-  /*
-   * 404：
-   *
-   * 当前日期还没有归档，
-   * 或该币种当时不存在。
-   */
-
-  if(
-    response.status === 404
-  ){
-
-    console.log(
-
-      "Not found:",
-
-      description
-
-    );
-
-
-    return [];
-
-  }
-
-
-  if(
-    !response.ok
-  ){
-
-    throw new Error(
-
-      `${description} ` +
-
-      `HTTP ${response.status}`
-
-    );
-
-  }
-
-
-  const arrayBuffer =
-    await response.arrayBuffer();
-
-
-  const buffer =
-    Buffer.from(
-      arrayBuffer
-    );
-
-
-  return extractZipCsv(
-    buffer
   );
 
 }
@@ -942,7 +1344,7 @@ async function downloadZip(
 
 /*
  * ============================================================
- * 下载已完成月份
+ * 下载 Monthly
  * ============================================================
  */
 
@@ -976,7 +1378,7 @@ async function downloadMonthly(
 
     url,
 
-    `${symbol} ${interval} ${year}-${month} 月度数据`
+    `${symbol} ${interval} ${year}-${month} Monthly`
 
   );
 
@@ -985,7 +1387,7 @@ async function downloadMonthly(
 
 /*
  * ============================================================
- * 下载一天
+ * 下载 Daily
  * ============================================================
  */
 
@@ -1023,7 +1425,7 @@ async function downloadDaily(
 
     url,
 
-    `${symbol} ${interval} ${year}-${month}-${day} 每日数据`
+    `${symbol} ${interval} ${year}-${month}-${day} Daily`
 
   );
 
@@ -1084,26 +1486,51 @@ function deduplicateKlines(
 
 /*
  * ============================================================
- * 获取历史数据
+ * 判断一个月份是否已经完整结束
  *
+ * 如果月份已经完整结束：
  *
- * 逻辑：
+ *     Monthly
  *
+ * 如果月份仍然进行中：
  *
- * 2026-07
- *     ↓
- * monthly
+ *     Daily
  *
- * 2026-08
- *     ↓
- * monthly
+ * ============================================================
+ */
+
+function isCompletedMonth(
+  month
+){
+
+  const currentMonthStart =
+    floorUtcMonth(
+      Date.now()
+    );
+
+
+  return (
+    month.end <=
+    currentMonthStart
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * 获取历史 K 线
  *
- * 2026-09
- *     ↓
- * daily
+ * 核心逻辑：
  *
+ * 完整月份：
  *
- * 不使用 Futures REST API。
+ *     Monthly ZIP
+ *
+ * 当前 / 不完整月份：
+ *
+ *     Daily ZIP
+ *
  * ============================================================
  */
 
@@ -1121,6 +1548,8 @@ async function fetchHistoricalKlines(
 
     warmupStart,
 
+    oosStart,
+
     oosEnd
 
   } =
@@ -1129,17 +1558,23 @@ async function fetchHistoricalKlines(
 
   const cacheKey =
 
+    `${SERVER_VERSION}_` +
+
     `${symbol}_` +
 
     `${interval}_` +
 
     `${warmupStart}_` +
 
+    `${oosStart}_` +
+
     `${oosEnd}`;
 
 
   /*
-   * 缓存
+   * ==========================================================
+   * Cache
+   * ==========================================================
    */
 
   if(
@@ -1148,6 +1583,17 @@ async function fetchHistoricalKlines(
     )
   ){
 
+    console.log(
+
+      `[CACHE HIT]`,
+
+      symbol,
+
+      interval
+
+    );
+
+
     return cache.get(
       cacheKey
     );
@@ -1155,8 +1601,25 @@ async function fetchHistoricalKlines(
   }
 
 
+  /*
+   * ==========================================================
+   * Promise Cache
+   * ==========================================================
+   */
+
   const promise =
     (async() => {
+
+      console.log(
+
+        `[DATA START]`,
+
+        symbol,
+
+        interval
+
+      );
+
 
       const months =
         monthRange(
@@ -1173,7 +1636,7 @@ async function fetchHistoricalKlines(
 
       /*
        * ======================================================
-       * 逐月处理
+       * 每个月
        * ======================================================
        */
 
@@ -1202,105 +1665,43 @@ async function fetchHistoricalKlines(
           );
 
 
+        if(
+          monthStart >= monthEnd
+        ){
+
+          continue;
+
+        }
+
+
         /*
          * ====================================================
-         * 当前测试区间的 2026-09
+         * 完整月份
          *
-         * 使用 daily ZIP
-         *
-         * 不使用 fapi API。
+         * Monthly
          * ====================================================
          */
 
         if(
-          month.year === 2026 &&
-          month.month === "09"
+          isCompletedMonth(
+            month
+          ) &&
+
+          monthStart ===
+            month.start &&
+
+          monthEnd ===
+            month.end
+
         ){
 
           console.log(
 
-            `${symbol} ${interval}: ` +
+            `[MONTHLY]`,
 
-            `使用 September daily archive`
+            symbol,
 
-          );
-
-
-          const days =
-            dayRange(
-
-              monthStart,
-
-              monthEnd
-
-            );
-
-
-          /*
-           * 每天并发下载
-           */
-
-          const jobs =
-            days.map(
-
-              day =>
-
-                downloadDaily(
-
-                  symbol,
-
-                  interval,
-
-                  day.year,
-
-                  day.month,
-
-                  day.day
-
-                )
-
-            );
-
-
-          const dailyData =
-            await Promise.all(
-              jobs
-            );
-
-
-          for(
-            const rows
-            of dailyData
-          ){
-
-            if(
-              rows.length
-            ){
-
-              all =
-                all.concat(
-                  rows
-                );
-
-            }
-
-          }
-
-        }else{
-
-          /*
-           * ==================================================
-           * 已完成月份
-           *
-           * 使用 monthly ZIP
-           * ==================================================
-           */
-
-          console.log(
-
-            `${symbol} ${interval}: ` +
-
-            `使用 monthly archive ` +
+            interval,
 
             `${month.year}-${month.month}`
 
@@ -1332,6 +1733,108 @@ async function fetchHistoricalKlines(
 
           }
 
+
+          continue;
+
+        }
+
+
+        /*
+         * ====================================================
+         * 不完整月份
+         *
+         * Daily
+         * ====================================================
+         */
+
+        console.log(
+
+          `[DAILY]`,
+
+          symbol,
+
+          interval,
+
+          `${month.year}-${month.month}`,
+
+          new Date(
+            monthStart
+          ).toISOString(),
+
+          "→",
+
+          new Date(
+            monthEnd
+          ).toISOString()
+
+        );
+
+
+        const days =
+          dayRange(
+
+            monthStart,
+
+            monthEnd
+
+          );
+
+
+        /*
+         * ====================================================
+         * 注意：
+         *
+         * 这里虽然创建多个任务，
+         * 但真正的网络下载由全局 queue 控制。
+         *
+         * 不会再同时发送几十个请求。
+         * ====================================================
+         */
+
+        const jobs =
+          days.map(
+
+            day =>
+
+              downloadDaily(
+
+                symbol,
+
+                interval,
+
+                day.year,
+
+                day.month,
+
+                day.day
+
+              )
+
+          );
+
+
+        const dailyData =
+          await Promise.all(
+            jobs
+          );
+
+
+        for(
+          const rows
+          of dailyData
+        ){
+
+          if(
+            rows.length
+          ){
+
+            all =
+              all.concat(
+                rows
+              );
+
+          }
+
         }
 
       }
@@ -1351,7 +1854,7 @@ async function fetchHistoricalKlines(
 
       /*
        * ======================================================
-       * 最终时间过滤
+       * 时间过滤
        * ======================================================
        */
 
@@ -1386,7 +1889,7 @@ async function fetchHistoricalKlines(
 
       /*
        * ======================================================
-       * 输出统计
+       * 第一根 / 最后一根
        * ======================================================
        */
 
@@ -1402,22 +1905,30 @@ async function fetchHistoricalKlines(
 
       console.log(
 
-        `${symbol} ${interval}: ` +
+        `[DATA READY]`,
 
-        `${result.length} candles`
+        symbol,
+
+        interval,
+
+        `candles=${result.length}`
 
       );
 
 
       console.log(
 
-        `${symbol} ${interval}: ` +
+        `[DATA RANGE]`,
+
+        symbol,
+
+        interval,
 
         `${new Date(
           first
-        ).toISOString()} ` +
+        ).toISOString()}`,
 
-        `→ ` +
+        "→",
 
         `${new Date(
           last
@@ -1428,7 +1939,7 @@ async function fetchHistoricalKlines(
 
       /*
        * ======================================================
-       * OOS 数据检查
+       * OOS 检查
        * ======================================================
        */
 
@@ -1438,10 +1949,10 @@ async function fetchHistoricalKlines(
           row =>
 
             row.openTime >=
-              range.oosStart &&
+              oosStart &&
 
             row.openTime <
-              range.oosEnd
+              oosEnd
 
         );
 
@@ -1463,11 +1974,13 @@ async function fetchHistoricalKlines(
 
       console.log(
 
-        `${symbol} ${interval}: ` +
+        `[OOS READY]`,
 
-        `OOS candles = ` +
+        symbol,
 
-        `${oosRows.length}`
+        interval,
+
+        `candles=${oosRows.length}`
 
       );
 
@@ -1505,11 +2018,6 @@ async function fetchHistoricalKlines(
 
   }catch(error){
 
-    /*
-     * 失败时删除缓存，
-     * 防止下一次永远读取失败 Promise。
-     */
-
     cache.delete(
       cacheKey
     );
@@ -1535,7 +2043,7 @@ function getMeta(
   return {
 
     version:
-      "V3.5.1",
+      SERVER_VERSION,
 
     oos:
       true,
@@ -1578,7 +2086,16 @@ function getMeta(
 
       "15m"
 
-    ]
+    ],
+
+    downloadConcurrency:
+      DOWNLOAD_CONCURRENCY,
+
+    downloadTimeoutMs:
+      DOWNLOAD_TIMEOUT,
+
+    maxRetries:
+      MAX_RETRIES
 
   };
 
@@ -1615,7 +2132,9 @@ app.get(
 
 
       /*
+       * ======================================================
        * Symbol 检查
+       * ======================================================
        */
 
       if(
@@ -1649,13 +2168,13 @@ app.get(
 
 
       console.log(
-        "================================"
+        "=============================================="
       );
 
 
       console.log(
 
-        "V3.5.1 Market request:",
+        `${SERVER_VERSION} Market request:`,
 
         symbol
 
@@ -1697,13 +2216,26 @@ app.get(
 
 
       console.log(
-        "================================"
+
+        "Download concurrency:",
+
+        DOWNLOAD_CONCURRENCY
+
+      );
+
+
+      console.log(
+        "=============================================="
       );
 
 
       /*
        * ======================================================
-       * 三个周期并发
+       * 三周期
+       *
+       * Promise.all 没问题。
+       *
+       * 真正网络下载由 queue 控制。
        * ======================================================
        */
 
@@ -1826,12 +2358,25 @@ app.get(
 
         }
 
+
+        console.log(
+
+          `[CHECK OK]`,
+
+          symbol,
+
+          name,
+
+          `OOS candles=${oosRows.length}`
+
+        );
+
       }
 
 
       /*
        * ======================================================
-       * 返回数据
+       * 返回
        * ======================================================
        */
 
@@ -1840,7 +2385,7 @@ app.get(
         ok:true,
 
         version:
-          "V3.5.1",
+          SERVER_VERSION,
 
         symbol,
 
@@ -1867,11 +2412,21 @@ app.get(
     }catch(error){
 
       console.error(
+        "=============================================="
+      );
 
-        "Market error:",
+
+      console.error(
+
+        `${SERVER_VERSION} Market error:`,
 
         error
 
+      );
+
+
+      console.error(
+        "=============================================="
       );
 
 
@@ -1882,6 +2437,9 @@ app.get(
         .json({
 
           ok:false,
+
+          version:
+            SERVER_VERSION,
 
           error:
 
@@ -1920,15 +2478,16 @@ app.get(
 
 
     console.log(
-
       "Market cache cleared"
-
     );
 
 
     return res.json({
 
       ok:true,
+
+      version:
+        SERVER_VERSION,
 
       message:
         "行情缓存已清除"
@@ -1971,7 +2530,7 @@ app.get(
         ok:true,
 
         version:
-          "V3.5.1",
+          SERVER_VERSION,
 
         source:
           "Binance USD-M Futures Public Data",
@@ -1987,7 +2546,13 @@ app.get(
         ),
 
         cacheSize:
-          cache.size
+          cache.size,
+
+        activeDownloads:
+          activeDownloads,
+
+        queuedDownloads:
+          downloadQueue.length
 
       });
 
@@ -2001,12 +2566,68 @@ app.get(
 
           ok:false,
 
+          version:
+            SERVER_VERSION,
+
           error:
             error.message
 
         });
 
     }
+
+  }
+
+);
+
+
+/*
+ * ============================================================
+ * 调试接口
+ *
+ * 用来查看当前下载队列。
+ *
+ * ============================================================
+ */
+
+app.get(
+
+  "/api/debug",
+
+  (
+
+    req,
+
+    res
+
+  ) => {
+
+    return res.json({
+
+      ok:true,
+
+      version:
+        SERVER_VERSION,
+
+      cacheSize:
+        cache.size,
+
+      activeDownloads:
+        activeDownloads,
+
+      queuedDownloads:
+        downloadQueue.length,
+
+      downloadConcurrency:
+        DOWNLOAD_CONCURRENCY,
+
+      downloadTimeoutMs:
+        DOWNLOAD_TIMEOUT,
+
+      maxRetries:
+        MAX_RETRIES
+
+    });
 
   }
 
@@ -2067,12 +2688,12 @@ app.listen(
   () => {
 
     console.log(
-      "================================"
+      "================================================"
     );
 
 
     console.log(
-      "Quant V3.5.1 Server"
+      `Quant ${SERVER_VERSION} Server`
     );
 
 
@@ -2092,6 +2713,13 @@ app.listen(
 
     console.log(
 
+      "市场：Binance USD-M Futures"
+
+    );
+
+
+    console.log(
+
       "数据方式：Monthly + Daily"
 
     );
@@ -2099,7 +2727,34 @@ app.listen(
 
     console.log(
 
-      "绝不使用 fapi.binance.com"
+      "不使用 fapi.binance.com"
+
+    );
+
+
+    console.log(
+
+      "下载并发：",
+
+      DOWNLOAD_CONCURRENCY
+
+    );
+
+
+    console.log(
+
+      "下载超时：",
+
+      `${DOWNLOAD_TIMEOUT / 1000}s`
+
+    );
+
+
+    console.log(
+
+      "最大重试：",
+
+      MAX_RETRIES
 
     );
 
@@ -2139,7 +2794,7 @@ app.listen(
 
 
     console.log(
-      "================================"
+      "================================================"
     );
 
   }
