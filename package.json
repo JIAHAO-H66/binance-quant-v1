@@ -1,13 +1,15 @@
 {
-  "name": "binance-quant-v1-web2",
+  "name": "quant-v2-backtest",
   "version": "1.0.0",
-  "description": "Quant V1 backtest web service",
+  "description": "Multi-timeframe crypto futures backtesting tool",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "adm-zip": "^0.5.16"
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
