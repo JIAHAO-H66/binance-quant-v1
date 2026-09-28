@@ -1,16 +1,16 @@
 {
-  "name": "quant-v2-backtest",
+  "name": "quant-v2-backtesta1.0.0",
   "version": "1.0.0",
-  "description": "Quant V2 multi-timeframe crypto futures backtest",
+  "description": "Quant V3.7.18.10 Binance Futures Demo",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "adm-zip": "^0.5.16",
-    "express": "^5.1.0"
-  },
-  "engines": {
-    "node": ">=18"
+    "ws": "^8.18.3"
   }
 }
