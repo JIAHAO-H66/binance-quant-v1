@@ -9,6 +9,7 @@ const { WebSocket } = require('ws');
 const AdmZip = require('adm-zip');
 const { URL } = require('url');
 
+
 function loadEnv(){
 
   const p =
@@ -74,8 +75,7 @@ function loadEnv(){
         );
 
     if(
-      process.env[k] ===
-      undefined
+      process.env[k] === undefined
     ){
 
       process.env[k] =
@@ -86,6 +86,7 @@ function loadEnv(){
   }
 
 }
+
 
 loadEnv();
 
@@ -98,30 +99,23 @@ loadEnv();
  *
  * 后端服务器
  *
- * 本版本重点：
+ * 本版本：
  *
- * 1. 保留原正式交易框架
+ * 1. 保留正式交易框架
  * 2. 保留 3 仓限制
  * 3. 保留原风险参数
  * 4. 保留 Demo/Testnet 安全闸门
  * 5. 保留原行情接口
- * 6. Funding 使用 Binance Public Data 历史归档
- * 7. Funding 不依赖受限地区实时 Funding API
- * 8. Funding 数据加入完整性诊断
- * 9. Funding 没有真实数据时绝不伪造
- * 10. Demo/Testnet hostname 严格白名单
- * 11. Funding gzip 归档兼容
- * 12. 当前月份 Funding 缓存自动刷新
- * 13. 入场后止损失败自动重试
- * 14. 止损持续失败时执行紧急平仓
- *
- * 正式策略逻辑不修改。
+ * 6. Funding 增加 REST + Public Data Archive 双通道
+ * 7. Funding REST 自动分页
+ * 8. Funding Archive 支持 CSV / CSV.GZ
+ * 9. Funding CSV 自动识别表头
+ * 10. Funding 数据源失败不再直接导致接口 500
+ * 11. Funding 增加完整诊断
+ * 12. 没有真实 Funding 数据时绝不伪造
  *
  * ============================================================
  */
-
-const VERSION =
-  '3.7.18.11';
 
 
 /*
@@ -145,6 +139,10 @@ try{
  * ============================================================
  */
 
+const VERSION =
+  '3.7.18.11';
+
+
 const PORT =
   Number(
     process.env.PORT ||
@@ -154,7 +152,7 @@ const PORT =
 
 /*
  * ============================================================
- * Demo / Testnet 交易地址
+ * Demo / Testnet
  * ============================================================
  */
 
@@ -165,7 +163,33 @@ const BASE =
 
 /*
  * ============================================================
- * Public Market Data
+ * Public Futures API
+ *
+ * Funding 不使用 Demo。
+ *
+ * 这里允许配置多个 Public Host。
+ *
+ * ============================================================
+ */
+
+const PUBLIC_FAPI_BASES = [
+
+  process.env.BINANCE_PUBLIC_FAPI_BASE_URL ||
+    'https://fapi.binance.com',
+
+  'https://data-api.binance.vision'
+
+]
+  .filter(Boolean)
+  .filter(
+    (x,i,a) =>
+      a.indexOf(x) === i
+  );
+
+
+/*
+ * ============================================================
+ * Public Market Base
  * ============================================================
  */
 
@@ -252,8 +276,6 @@ const RISK =
 /*
  * ============================================================
  * 最大仓位
- *
- * 保持 3 仓
  * ============================================================
  */
 
@@ -440,66 +462,21 @@ const ENTRY_COOLDOWN_BARS =
 
 /*
  * ============================================================
- * Demo/Testnet 安全闸门
- *
- * 严格检查 hostname。
- *
- * 禁止：
- *
- * fapi.binance.com
- *
+ * 安全闸门
  * ============================================================
  */
 
-const ALLOWED_DEMO_HOSTS = new Set([
-
-  'demo-fapi.binance.com',
-
-  'testnet.binancefuture.com'
-
-]);
-
-
-function isAllowedDemoBase(
-  value
-){
-
-  try{
-
-    const u =
-      new URL(
-        value
-      );
-
-    return (
-
-      u.protocol ===
-      'https:' &&
-
-      ALLOWED_DEMO_HOSTS.has(
-        u.hostname.toLowerCase()
-      )
-
-    );
-
-  }catch{
-
-    return false;
-
-  }
-
-}
-
-
 if(
-  !isAllowedDemoBase(
+
+  !/demo-fapi\.binance\.com|testnet\.binancefuture\.com/i.test(
     BASE
   )
+
 ){
 
   throw new Error(
 
-    'SAFETY STOP: BINANCE_FUTURES_BASE_URL must be exactly an allowed Binance Demo/Testnet HTTPS host.'
+    'SAFETY STOP: BINANCE_FUTURES_BASE_URL must be a Demo/Testnet host. Production fapi.binance.com is refused.'
 
   );
 
@@ -542,9 +519,26 @@ const state = {
     null,
 
   lastClosed15m:
+    {},
+
+  fundingDiagnostics:
     {}
 
 };
+
+
+/*
+ * ============================================================
+ * Funding Cache
+ * ============================================================
+ */
+
+const fundingArchiveCache =
+  new Map();
+
+
+const fundingApiCache =
+  new Map();
 
 
 /*
@@ -554,8 +548,11 @@ const state = {
  */
 
 function log(
+
   msg,
+
   extra
+
 ){
 
   const line =
@@ -605,9 +602,13 @@ function log(
  */
 
 function clamp(
+
   x,
+
   a,
+
   b
+
 ){
 
   return Math.max(
@@ -631,8 +632,11 @@ function clamp(
  */
 
 function ema(
+
   values,
+
   p
+
 ){
 
   if(
@@ -703,8 +707,11 @@ function ema(
  */
 
 function atr(
+
   data,
+
   p = 14
+
 ){
 
   const out =
@@ -841,8 +848,11 @@ function atr(
  */
 
 function gap(
+
   a,
+
   b
+
 ){
 
   return (
@@ -954,9 +964,13 @@ function loc(
  */
 
 function longPB(
+
   data,
+
   e20,
+
   i
+
 ){
 
   const start =
@@ -1009,9 +1023,13 @@ function longPB(
  */
 
 function shortPB(
+
   data,
+
   e20,
+
   i
+
 ){
 
   const start =
@@ -1064,8 +1082,11 @@ function shortPB(
  */
 
 function quality(
+
   side,
+
   vals
+
 ){
 
   let s =
@@ -1138,8 +1159,7 @@ function quality(
 
     10 *
     clamp01(
-      vals.bodyAtr /
-      1
+      vals.bodyAtr
     );
 
 
@@ -1221,8 +1241,38 @@ function qs(
   params
 ){
 
+  const clean =
+    {};
+
+
+  for(
+    const [
+      k,
+      v
+    ] of
+      Object.entries(
+        params || {}
+      )
+  ){
+
+    if(
+      v === undefined ||
+      v === null ||
+      v === ''
+    ){
+
+      continue;
+
+    }
+
+    clean[k] =
+      v;
+
+  }
+
+
   return new URLSearchParams(
-    params
+    clean
   ).toString();
 
 }
@@ -1270,15 +1320,21 @@ function sign(
  */
 
 function requestText(
+
   url,
+
   options = {}
+
 ){
 
   return new Promise(
 
     (
+
       resolve,
+
       reject
+
     ) => {
 
       const u =
@@ -1296,6 +1352,21 @@ function requestText(
         isHttps
           ? https
           : http;
+
+
+      const headers = {
+
+        'User-Agent':
+          options.userAgent ||
+          `Quant-V${VERSION}/1.0`,
+
+        'Accept':
+          options.accept ||
+          '*/*',
+
+        ...(options.headers || {})
+
+      };
 
 
       const req =
@@ -1321,9 +1392,7 @@ function requestText(
               options.method ||
               'GET',
 
-            headers:
-              options.headers ||
-              {},
+            headers,
 
             family:
               4,
@@ -1361,7 +1430,9 @@ function requestText(
 
 
             res.on(
+
               'end',
+
               () => {
 
                 resolve({
@@ -1378,6 +1449,7 @@ function requestText(
                 });
 
               }
+
             );
 
           }
@@ -1386,13 +1458,17 @@ function requestText(
 
 
       req.on(
+
         'timeout',
+
         () =>
+
           req.destroy(
             new Error(
               'request timeout'
             )
           )
+
       );
 
 
@@ -1429,15 +1505,21 @@ function requestText(
  */
 
 function requestBuffer(
+
   url,
+
   options = {}
+
 ){
 
   return new Promise(
 
     (
+
       resolve,
+
       reject
+
     ) => {
 
       const u =
@@ -1455,6 +1537,20 @@ function requestBuffer(
         isHttps
           ? https
           : http;
+
+
+      const headers = {
+
+        'User-Agent':
+          options.userAgent ||
+          `Quant-V${VERSION}-Archive/1.0`,
+
+        'Accept':
+          '*/*',
+
+        ...(options.headers || {})
+
+      };
 
 
       const req =
@@ -1480,9 +1576,7 @@ function requestBuffer(
               options.method ||
               'GET',
 
-            headers:
-              options.headers ||
-              {},
+            headers,
 
             family:
               4,
@@ -1508,16 +1602,21 @@ function requestBuffer(
 
 
             res.on(
+
               'data',
+
               c =>
                 chunks.push(
                   Buffer.from(c)
                 )
+
             );
 
 
             res.on(
+
               'end',
+
               () => {
 
                 resolve({
@@ -1537,6 +1636,7 @@ function requestBuffer(
                 });
 
               }
+
             );
 
           }
@@ -1545,13 +1645,17 @@ function requestBuffer(
 
 
       req.on(
+
         'timeout',
+
         () =>
+
           req.destroy(
             new Error(
               'request timeout'
             )
           )
+
       );
 
 
@@ -1577,8 +1681,11 @@ function requestBuffer(
  */
 
 async function requestJson(
+
   url,
+
   options = {}
+
 ){
 
   let lastErr =
@@ -1642,21 +1749,32 @@ async function requestJson(
 
         (
           data &&
-          data.code < 0
+          Number(data.code) < 0
         )
 
       ){
 
-        throw new Error(
+        const err =
+          new Error(
 
-          `Binance ${r.status}: ` +
+            `Binance ${r.status}: ` +
 
-          `${
-            data?.msg ||
-            r.text
-          }`
+            `${
+              data?.msg ||
+              r.text
+            }`
 
-        );
+          );
+
+
+        err.status =
+          r.status;
+
+        err.data =
+          data;
+
+
+        throw err;
 
       }
 
@@ -1710,10 +1828,15 @@ async function requestJson(
  */
 
 async function api(
+
   method,
+
   pathName,
+
   params = {},
+
   signed = false
+
 ){
 
   const p =
@@ -1728,6 +1851,7 @@ async function api(
 
     p.timestamp =
       Date.now();
+
 
     p.recvWindow =
       5000;
@@ -1746,12 +1870,15 @@ async function api(
   const url =
 
     BASE +
+
     pathName +
 
     (
       query
+
         ? '?' +
           query
+
         : ''
     );
 
@@ -1799,9 +1926,13 @@ async function api(
  */
 
 async function postForm(
+
   pathName,
+
   params = {},
+
   signed = true
+
 ){
 
   const p =
@@ -1826,12 +1957,14 @@ async function postForm(
   const q =
 
     signed
+
       ? sign(p)
+
       : qs(p);
 
 
   const r =
-    await fetch(
+    await requestText(
 
       BASE +
       pathName,
@@ -1859,10 +1992,6 @@ async function postForm(
     );
 
 
-  const text =
-    await r.text();
-
-
   let d;
 
 
@@ -1870,13 +1999,13 @@ async function postForm(
 
     d =
       JSON.parse(
-        text
+        r.text
       );
 
   }catch{
 
     throw new Error(
-      text
+      r.text
     );
 
   }
@@ -1884,9 +2013,11 @@ async function postForm(
 
   if(
 
-    !r.ok ||
+    r.status < 200 ||
 
-    d.code < 0
+    r.status >= 300 ||
+
+    Number(d.code) < 0
 
   ){
 
@@ -1896,7 +2027,7 @@ async function postForm(
 
       (
         d.msg ||
-        text
+        r.text
       )
 
     );
@@ -1916,8 +2047,11 @@ async function postForm(
  */
 
 async function putForm(
+
   pathName,
+
   params = {}
+
 ){
 
   const p =
@@ -1940,7 +2074,7 @@ async function putForm(
 
 
   const r =
-    await fetch(
+    await requestText(
 
       BASE +
       pathName,
@@ -1968,10 +2102,6 @@ async function putForm(
     );
 
 
-  const t =
-    await r.text();
-
-
   let d;
 
 
@@ -1979,13 +2109,13 @@ async function putForm(
 
     d =
       JSON.parse(
-        t
+        r.text
       );
 
   }catch{
 
     throw new Error(
-      t
+      r.text
     );
 
   }
@@ -1993,9 +2123,11 @@ async function putForm(
 
   if(
 
-    !r.ok ||
+    r.status < 200 ||
 
-    d.code < 0
+    r.status >= 300 ||
+
+    Number(d.code) < 0
 
   ){
 
@@ -2005,7 +2137,7 @@ async function putForm(
 
       (
         d.msg ||
-        t
+        r.text
       )
 
     );
@@ -2020,20 +2152,147 @@ async function putForm(
 
 /*
  * ============================================================
+ * Futures Public API
+ *
+ * 自动尝试多个 Host
+ * ============================================================
+ */
+
+async function publicFuturesApi(
+
+  pathName,
+
+  params = {}
+
+){
+
+  let lastError =
+    null;
+
+
+  for(
+    const base of
+      PUBLIC_FAPI_BASES
+  ){
+
+    try{
+
+      const query =
+        qs(params);
+
+
+      const url =
+
+        base +
+
+        pathName +
+
+        (
+          query
+            ? '?' + query
+            : ''
+        );
+
+
+      const data =
+        await requestJson(
+
+          url,
+
+          {
+
+            method:
+              'GET',
+
+            headers:{
+
+              'User-Agent':
+                `Quant-V${VERSION}-Public/1.0`,
+
+              'Accept':
+                'application/json'
+
+            },
+
+            timeout:
+              20000
+
+          }
+
+        );
+
+
+      return {
+
+        data,
+
+        base
+
+      };
+
+    }catch(e){
+
+      lastError =
+        e;
+
+
+      log(
+
+        'PUBLIC_FUTURES_HOST_ERROR',
+
+        {
+
+          base,
+
+          path:
+            pathName,
+
+          status:
+            e.status,
+
+          error:
+            e.message
+
+        }
+
+      );
+
+    }
+
+  }
+
+
+  throw (
+
+    lastError ||
+
+    new Error(
+      'All public futures hosts failed'
+    )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
  * Live Klines
  * ============================================================
  */
 
 async function getKlines(
+
   symbol,
+
   interval,
+
   limit = 300
+
 ){
 
-  const a =
-    await api(
-
-      'GET',
+  const result =
+    await publicFuturesApi(
 
       '/fapi/v1/klines',
 
@@ -2050,9 +2309,15 @@ async function getKlines(
     );
 
 
-  return a.map(
-    candleFromK
-  );
+  return Array.isArray(
+    result.data
+  )
+
+    ? result.data.map(
+        candleFromK
+      )
+
+    : [];
 
 }
 
@@ -2064,8 +2329,11 @@ async function getKlines(
  */
 
 function parseTime(
+
   v,
+
   fallback
+
 ){
 
   if(
@@ -2088,7 +2356,9 @@ function parseTime(
   ){
 
     return v < 1e12
+
       ? v * 1000
+
       : v;
 
   }
@@ -2103,7 +2373,9 @@ function parseTime(
   ){
 
     return n < 1e12
+
       ? n * 1000
+
       : n;
 
   }
@@ -2116,7 +2388,9 @@ function parseTime(
 
 
   return Number.isFinite(t)
+
     ? t
+
     : fallback;
 
 }
@@ -2156,8 +2430,11 @@ const INTERVAL_MS = {
  */
 
 async function publicApi(
+
   pathName,
+
   params = {}
+
 ){
 
   const query =
@@ -2167,12 +2444,15 @@ async function publicApi(
   const url =
 
     PUBLIC_BASE +
+
     pathName +
 
     (
       query
+
         ? '?' +
           query
+
         : ''
     );
 
@@ -2210,10 +2490,15 @@ async function publicApi(
  */
 
 async function getHistoricalKlines(
+
   symbol,
+
   interval,
+
   startTime,
+
   endTime
+
 ){
 
   const step =
@@ -2296,8 +2581,8 @@ async function getHistoricalKlines(
 
   ){
 
-    const rows =
-      await publicApi(
+    const result =
+      await publicFuturesApi(
 
         '/fapi/v1/klines',
 
@@ -2323,6 +2608,10 @@ async function getHistoricalKlines(
         }
 
       );
+
+
+    const rows =
+      result.data;
 
 
     if(
@@ -2449,7 +2738,9 @@ async function getHistoricalKlines(
  */
 
 function normalizeFundingRows(
+
   rows
+
 ){
 
   const out =
@@ -2474,11 +2765,17 @@ function normalizeFundingRows(
             calcTime:
               x[0],
 
-            fundingIntervalHours:
+            symbol:
               x[1],
 
+            fundingIntervalHours:
+              x[2],
+
             fundingRate:
-              x[2]
+              x[3],
+
+            markPrice:
+              x[4]
 
           }
 
@@ -2541,6 +2838,19 @@ function normalizeFundingRows(
       );
 
 
+    const markPrice =
+
+      Number(
+
+        obj.markPrice ??
+
+        obj.mark_price ??
+
+        NaN
+
+      );
+
+
     if(
 
       Number.isFinite(t) &&
@@ -2566,17 +2876,18 @@ function normalizeFundingRows(
           interval > 0
 
             ? interval
+
             : 8,
 
         markPrice:
 
-          Number(
-
-            obj.markPrice ??
-            obj.mark_price ??
-            NaN
-
+          Number.isFinite(
+            markPrice
           )
+
+            ? markPrice
+
+            : null
 
       });
 
@@ -2592,36 +2903,414 @@ function normalizeFundingRows(
 
 /*
  * ============================================================
- * Funding Archive Cache
+ * CSV Parser
  *
- * 当前月份：
+ * 支持：
  *
- * 5 分钟自动刷新。
+ * calc_time,symbol,funding_interval_hours,last_funding_rate
  *
- * 历史月份：
- *
- * 长期缓存。
+ * 以及无 header CSV。
  * ============================================================
  */
 
-const fundingArchiveCache =
-  new Map();
+function splitCsvLine(
+  line
+){
+
+  const out =
+    [];
+
+  let cur =
+    '';
+
+  let quoted =
+    false;
 
 
-const FUNDING_CURRENT_MONTH_TTL =
-  5 *
-  60 *
-  1000;
+  for(
+    let i = 0;
+
+    i < line.length;
+
+    i++
+
+  ){
+
+    const ch =
+      line[i];
+
+
+    if(
+      ch === '"'
+    ){
+
+      if(
+        quoted &&
+        line[i + 1] === '"'
+      ){
+
+        cur +=
+          '"';
+
+        i++;
+
+      }else{
+
+        quoted =
+          !quoted;
+
+      }
+
+      continue;
+
+    }
+
+
+    if(
+      ch === ',' &&
+      !quoted
+    ){
+
+      out.push(
+        cur
+      );
+
+      cur =
+        '';
+
+      continue;
+
+    }
+
+
+    cur +=
+      ch;
+
+  }
+
+
+  out.push(
+    cur
+  );
+
+
+  return out.map(
+    x =>
+      x.trim()
+  );
+
+}
 
 
 /*
  * ============================================================
- * Binance Public Data Funding Archive
+ * CSV Header Normalization
  * ============================================================
  */
 
-const FUNDING_ARCHIVE_BASE =
-  'https://data.binance.vision/data/futures/um/monthly/fundingRate';
+function normalizeHeader(
+  x
+){
+
+  return String(
+    x || ''
+  )
+    .trim()
+    .toLowerCase()
+    .replace(
+      /^["']|["']$/g,
+      ''
+    )
+    .replace(
+      /\s+/g,
+      '_'
+    );
+
+}
+
+
+/*
+ * ============================================================
+ * Parse Funding CSV
+ * ============================================================
+ */
+
+function parseFundingCsvText(
+
+  text,
+
+  symbol
+
+){
+
+  const clean =
+    String(
+      text || ''
+    )
+      .replace(
+        /^\uFEFF/,
+        ''
+      )
+      .replace(
+        /\r/g,
+        ''
+      )
+      .trim();
+
+
+  if(
+    !clean
+  ){
+
+    return [];
+
+  }
+
+
+  const lines =
+    clean.split('\n');
+
+
+  if(
+    !lines.length
+  ){
+
+    return [];
+
+  }
+
+
+  const first =
+    splitCsvLine(
+      lines[0]
+    );
+
+
+  const firstNorm =
+    first.map(
+      normalizeHeader
+    );
+
+
+  const hasHeader =
+
+    firstNorm.some(
+
+      x =>
+
+        x === 'calc_time' ||
+
+        x === 'funding_time' ||
+
+        x === 'funding_interval_hours' ||
+
+        x === 'last_funding_rate'
+
+    );
+
+
+  const rows =
+    [];
+
+
+  let indexes = {
+
+    calcTime:
+      0,
+
+    symbol:
+      1,
+
+    interval:
+      2,
+
+    rate:
+      3,
+
+    mark:
+      4
+
+  };
+
+
+  if(
+    hasHeader
+  ){
+
+    for(
+
+      let i = 0;
+
+      i < firstNorm.length;
+
+      i++
+
+    ){
+
+      const h =
+        firstNorm[i];
+
+
+      if(
+
+        h === 'calc_time' ||
+
+        h === 'funding_time' ||
+
+        h === 'fundingtime'
+
+      ){
+
+        indexes.calcTime =
+          i;
+
+      }
+
+
+      if(
+        h === 'symbol'
+      ){
+
+        indexes.symbol =
+          i;
+
+      }
+
+
+      if(
+
+        h === 'funding_interval_hours' ||
+
+        h === 'fundingintervalhours'
+
+      ){
+
+        indexes.interval =
+          i;
+
+      }
+
+
+      if(
+
+        h === 'last_funding_rate' ||
+
+        h === 'funding_rate' ||
+
+        h === 'fundingrate'
+
+      ){
+
+        indexes.rate =
+          i;
+
+      }
+
+
+      if(
+        h === 'mark_price'
+      ){
+
+        indexes.mark =
+          i;
+
+      }
+
+    }
+
+  }
+
+
+  const startIndex =
+    hasHeader
+      ? 1
+      : 0;
+
+
+  for(
+
+    let i =
+      startIndex;
+
+    i < lines.length;
+
+    i++
+
+  ){
+
+    const line =
+      lines[i].trim();
+
+
+    if(
+      !line
+    ){
+
+      continue;
+
+    }
+
+
+    const cols =
+      splitCsvLine(
+        line
+      );
+
+
+    const obj = {
+
+      symbol:
+        cols[
+          indexes.symbol
+        ] ||
+
+        symbol,
+
+      calcTime:
+        cols[
+          indexes.calcTime
+        ],
+
+      fundingIntervalHours:
+        cols[
+          indexes.interval
+        ],
+
+      lastFundingRate:
+        cols[
+          indexes.rate
+        ],
+
+      markPrice:
+        cols[
+          indexes.mark
+        ]
+
+    };
+
+
+    const n =
+      normalizeFundingRows(
+        [obj]
+      );
+
+
+    if(
+      n.length
+    ){
+
+      rows.push(
+        n[0]
+      );
+
+    }
+
+  }
+
+
+  return rows;
+
+}
 
 
 /*
@@ -2688,9 +3377,17 @@ function nextMonth(
  * ============================================================
  */
 
+const FUNDING_ARCHIVE_BASE =
+
+  'https://data.binance.vision/data/futures/um/monthly/fundingRate';
+
+
 function fundingArchiveUrl(
+
   symbol,
+
   monthStart
+
 ){
 
   const d =
@@ -2746,8 +3443,8 @@ async function downloadArchive(
 
         headers:{
 
-          'User-Agent':
-            `Quant-V${VERSION}-FundingArchive/1.0`
+          'Accept':
+            'application/zip, application/octet-stream, */*'
 
         },
 
@@ -2776,11 +3473,17 @@ async function downloadArchive(
 
   ){
 
-    throw new Error(
+    const e =
+      new Error(
+        `Funding archive HTTP ${r.status}`
+      );
 
-      `Funding archive HTTP ${r.status}`
 
-    );
+    e.status =
+      r.status;
+
+
+    throw e;
 
   }
 
@@ -2804,17 +3507,15 @@ async function downloadArchive(
 /*
  * ============================================================
  * Parse Funding ZIP
- *
- * 支持：
- *
- * CSV
- * CSV.GZ
  * ============================================================
  */
 
 function parseFundingArchiveBuffer(
+
   buffer,
+
   symbol
+
 ){
 
   const zip =
@@ -2852,14 +3553,9 @@ function parseFundingArchiveBuffer(
   }
 
 
-  let raw =
+  let data =
     entry.getData();
 
-
-  /*
-   * 如果 ZIP 内部是 CSV.GZ，
-   * 先解 gzip。
-   */
 
   if(
     /\.csv\.gz$/i.test(
@@ -2867,138 +3563,229 @@ function parseFundingArchiveBuffer(
     )
   ){
 
-    try{
-
-      raw =
-        zlib.gunzipSync(
-          raw
-        );
-
-    }catch(e){
-
-      throw new Error(
-
-        'Funding CSV.GZ 解压失败: ' +
-        e.message
-
+    data =
+      zlib.gunzipSync(
+        data
       );
-
-    }
 
   }
 
 
   const text =
-    raw
-      .toString(
-        'utf8'
-      );
+    data.toString(
+      'utf8'
+    );
 
 
-  const lines =
-
-    text
-      .replace(
-        /^\uFEFF/,
-        ''
-      )
-      .trim()
-      .split(
-        /\r?\n/
-      );
-
-
-  const rows =
-    [];
-
-
-  for(
-    const line of lines
-  ){
-
-    if(
-      !line.trim()
-    ){
-
-      continue;
-
-    }
-
-
-    const cols =
-      line
-        .split(',')
-        .map(
-          x =>
-            x.trim()
-        );
-
-
-    if(
-      !Number.isFinite(
-        Number(
-          cols[0]
-        )
-      )
-    ){
-
-      continue;
-
-    }
-
-
-    const obj = {
-
-      symbol:
-        cols[1] ||
-        symbol,
-
-      calcTime:
-        cols[0],
-
-      fundingIntervalHours:
-        cols[2],
-
-      lastFundingRate:
-        cols[3]
-
-    };
-
-
-    const n =
-      normalizeFundingRows(
-        [obj]
-      );
-
-
-    if(
-      n.length
-    ){
-
-      rows.push(
-        n[0]
-      );
-
-    }
-
-  }
-
-
-  return rows;
+  return parseFundingCsvText(
+    text,
+    symbol
+  );
 
 }
 
 
 /*
  * ============================================================
- * Historical Funding
+ * Funding Archive
  * ============================================================
  */
 
-async function getHistoricalFunding(
+async function getHistoricalFundingFromArchive(
+
   symbol,
+
   startTime,
-  endTime
+
+  endTime,
+
+  diagnostics
+
+){
+
+  let start =
+    parseTime(
+
+      startTime,
+
+      Date.now() -
+      30 *
+      24 *
+      60 *
+      60 *
+      1000
+
+    );
+
+
+  const end =
+    parseTime(
+
+      endTime,
+
+      Date.now()
+
+    );
+
+
+  const first =
+    monthFloor(
+      start
+    );
+
+
+  const last =
+    monthFloor(
+      end
+    );
+
+
+  const all =
+    [];
+
+
+  for(
+
+    let m =
+      first;
+
+    m <= last;
+
+    m =
+      nextMonth(m)
+
+  ){
+
+    const url =
+      fundingArchiveUrl(
+
+        symbol,
+
+        m
+
+      );
+
+
+    diagnostics.archiveAttempts.push(
+      url
+    );
+
+
+    try{
+
+      let rows =
+        fundingArchiveCache.get(
+          url
+        );
+
+
+      if(
+        !rows
+      ){
+
+        const buf =
+          await downloadArchive(
+            url
+          );
+
+
+        rows =
+
+          buf
+
+            ? parseFundingArchiveBuffer(
+                buf,
+                symbol
+              )
+
+            : [];
+
+
+        fundingArchiveCache.set(
+
+          url,
+
+          rows
+
+        );
+
+      }
+
+
+      diagnostics.archiveMonths.push({
+
+        url,
+
+        events:
+          rows.length
+
+      });
+
+
+      for(
+        const x of rows
+      ){
+
+        if(
+
+          x.fundingTime >=
+            start &&
+
+          x.fundingTime <=
+            end
+
+        ){
+
+          all.push(
+            x
+          );
+
+        }
+
+      }
+
+    }catch(e){
+
+      diagnostics.archiveErrors.push({
+
+        url,
+
+        status:
+          e.status,
+
+        error:
+          e.message
+
+      });
+
+    }
+
+  }
+
+
+  return all;
+
+}
+
+
+/*
+ * ============================================================
+ * Funding REST
+ *
+ * 自动分页
+ * ============================================================
+ */
+
+async function getHistoricalFundingFromApi(
+
+  symbol,
+
+  startTime,
+
+  endTime,
+
+  diagnostics
+
 ){
 
   let start =
@@ -3043,113 +3830,70 @@ async function getHistoricalFunding(
   }
 
 
-  const first =
-    monthFloor(
-      start
-    );
-
-
-  const last =
-    monthFloor(
-      end
-    );
-
-
   const all =
     [];
 
 
-  const now =
-    Date.now();
-
-
-  const currentMonth =
-    monthFloor(
-      now
-    );
+  const seen =
+    new Set();
 
 
   for(
 
-    let m = first;
+    let page = 0;
 
-    m <= last;
+    page < 20;
 
-    m = nextMonth(m)
+    page++
 
   ){
 
-    const url =
-      fundingArchiveUrl(
-        symbol,
-        m
-      );
+    diagnostics.apiPages++;
 
 
-    const isCurrentMonth =
-      m === currentMonth;
+    const result =
+      await publicFuturesApi(
 
-
-    const cached =
-      fundingArchiveCache.get(
-        url
-      );
-
-
-    let rows;
-
-
-    if(
-
-      cached &&
-
-      (
-        !isCurrentMonth ||
-
-        now -
-        cached.cachedAt <
-        FUNDING_CURRENT_MONTH_TTL
-      )
-
-    ){
-
-      rows =
-        cached.rows;
-
-    }else{
-
-      const buf =
-        await downloadArchive(
-          url
-        );
-
-
-      rows =
-
-        buf
-
-          ? parseFundingArchiveBuffer(
-              buf,
-              symbol
-            )
-
-          : [];
-
-
-      fundingArchiveCache.set(
-
-        url,
+        '/fapi/v1/fundingRate',
 
         {
 
-          rows,
+          symbol,
 
-          cachedAt:
-            Date.now()
+          startTime:
+            Math.floor(
+              start
+            ),
+
+          endTime:
+            Math.floor(
+              end
+            ),
+
+          limit:
+            1000
 
         }
 
       );
+
+
+    diagnostics.apiHosts.push(
+      result.base
+    );
+
+
+    const rows =
+      normalizeFundingRows(
+        result.data
+      );
+
+
+    if(
+      !rows.length
+    ){
+
+      break;
 
     }
 
@@ -3168,13 +3912,315 @@ async function getHistoricalFunding(
 
       ){
 
-        all.push(
-          x
-        );
+        if(
+          !seen.has(
+            x.fundingTime
+          )
+        ){
+
+          seen.add(
+            x.fundingTime
+          );
+
+
+          all.push(
+            x
+          );
+
+        }
 
       }
 
     }
+
+
+    const last =
+      rows[
+        rows.length - 1
+      ]?.fundingTime;
+
+
+    if(
+      !Number.isFinite(last)
+    ){
+
+      break;
+
+    }
+
+
+    if(
+      last >= end
+    ){
+
+      break;
+
+    }
+
+
+    const next =
+      last + 1;
+
+
+    if(
+      next <= start
+    ){
+
+      break;
+
+    }
+
+
+    start =
+      next;
+
+
+    if(
+      rows.length < 1000
+    ){
+
+      break;
+
+    }
+
+  }
+
+
+  return all;
+
+}
+
+
+/*
+ * ============================================================
+ * Historical Funding
+ *
+ * REST + Archive 双通道
+ * ============================================================
+ */
+
+async function getHistoricalFunding(
+
+  symbol,
+
+  startTime,
+
+  endTime
+
+){
+
+  const start =
+    parseTime(
+
+      startTime,
+
+      Date.now() -
+      30 *
+      24 *
+      60 *
+      60 *
+      1000
+
+    );
+
+
+  const end =
+    parseTime(
+
+      endTime,
+
+      Date.now()
+
+    );
+
+
+  if(
+
+    !Number.isFinite(start) ||
+
+    !Number.isFinite(end) ||
+
+    end < start
+
+  ){
+
+    throw new Error(
+      'Invalid funding start/end'
+    );
+
+  }
+
+
+  const diagnostics = {
+
+    symbol,
+
+    start,
+
+    end,
+
+    api:
+
+      {
+
+        attempted:
+          true,
+
+        pages:
+          0,
+
+        hosts:
+          [],
+
+        errors:
+          []
+
+      },
+
+    archive:
+
+      {
+
+        attempted:
+          true,
+
+        archiveAttempts:
+          [],
+
+        archiveMonths:
+          [],
+
+        archiveErrors:
+          []
+
+      },
+
+    sourcesUsed:
+      [],
+
+    fallback:
+      false
+
+  };
+
+
+  let apiRows =
+    [];
+
+
+  try{
+
+    apiRows =
+      await getHistoricalFundingFromApi(
+
+        symbol,
+
+        start,
+
+        end,
+
+        diagnostics.api
+
+      );
+
+
+    if(
+      apiRows.length
+    ){
+
+      diagnostics.sourcesUsed.push(
+        'Binance Futures REST'
+      );
+
+    }
+
+  }catch(e){
+
+    diagnostics.api.errors.push({
+
+      status:
+        e.status,
+
+      error:
+        e.message
+
+    });
+
+  }
+
+
+  /*
+   * REST 有真实数据时，
+   * 直接使用 REST。
+   *
+   * 如果 REST 被 451 / 403 / 网络限制，
+   * 再走 Vision Archive。
+   */
+
+  if(
+    apiRows.length
+  ){
+
+    return {
+
+      rows:
+        apiRows.sort(
+
+          (a,b) =>
+            a.fundingTime -
+            b.fundingTime
+
+        ),
+
+      diagnostics
+
+    };
+
+  }
+
+
+  diagnostics.fallback =
+    true;
+
+
+  let archiveRows =
+    [];
+
+
+  try{
+
+    archiveRows =
+      await getHistoricalFundingFromArchive(
+
+        symbol,
+
+        start,
+
+        end,
+
+        diagnostics.archive
+
+      );
+
+  }catch(e){
+
+    diagnostics.archive.archiveErrors.push({
+
+      error:
+        e.message
+
+    });
+
+  }
+
+
+  if(
+    archiveRows.length
+  ){
+
+    diagnostics.sourcesUsed.push(
+      'Binance Public Data fundingRate archive'
+    );
 
   }
 
@@ -3184,7 +4230,7 @@ async function getHistoricalFunding(
 
 
   for(
-    const x of all
+    const x of archiveRows
   ){
 
     map.set(
@@ -3198,17 +4244,23 @@ async function getHistoricalFunding(
   }
 
 
-  return [
+  return {
 
-    ...map.values()
+    rows:
 
-  ].sort(
+      [
+        ...map.values()
+      ].sort(
 
-    (a,b) =>
-      a.fundingTime -
-      b.fundingTime
+        (a,b) =>
+          a.fundingTime -
+          b.fundingTime
 
-  );
+      ),
+
+    diagnostics
+
+  };
 
 }
 
@@ -3220,9 +4272,13 @@ async function getHistoricalFunding(
  */
 
 async function handleFunding(
+
   req,
+
   res,
+
   u
+
 ){
 
   const symbol =
@@ -3242,7 +4298,7 @@ async function handleFunding(
 
   if(
 
-    !/^[A-Z0-9]{5,20}$/.test(
+    !/^[A-Z0-9]{5,30}$/.test(
       symbol
     )
 
@@ -3288,18 +4344,6 @@ async function handleFunding(
     );
 
 
-  const rows =
-    await getHistoricalFunding(
-
-      symbol,
-
-      start,
-
-      end
-
-    );
-
-
   const rangeStart =
     parseTime(
 
@@ -3325,12 +4369,94 @@ async function handleFunding(
     );
 
 
+  let result;
+
+
+  try{
+
+    result =
+      await getHistoricalFunding(
+
+        symbol,
+
+        rangeStart,
+
+        rangeEnd
+
+      );
+
+  }catch(e){
+
+    return json(
+
+      res,
+
+      200,
+
+      {
+
+        ok:
+          true,
+
+        source:
+          null,
+
+        symbol,
+
+        start:
+          rangeStart,
+
+        end:
+          rangeEnd,
+
+        data:
+          [],
+
+        rows:
+          [],
+
+        diagnostics:{
+
+          available:
+            false,
+
+          events:
+            0,
+
+          expectedApprox:
+            0,
+
+          coverageRatio:
+            0,
+
+          gaps:
+            [],
+
+          error:
+            e.message
+
+        }
+
+      }
+
+    );
+
+  }
+
+
+  const rows =
+    result.rows;
+
+
+  const diagnostics =
+    result.diagnostics;
+
+
   /*
-   * 理论上每 8 小时一次。
+   * Funding 默认每 8 小时。
    *
-   * 这里只作为近似诊断。
-   *
-   * 不把 expected 当成强制数据标准。
+   * 这里只作为近似诊断，
+   * 不作为强制数据标准。
    */
 
   const expected =
@@ -3411,6 +4537,49 @@ async function handleFunding(
   }
 
 
+  const coverageRatio =
+
+    expected > 0
+
+      ? rows.length /
+        expected
+
+      : null;
+
+
+  const source =
+
+    diagnostics.sourcesUsed.length
+
+      ? diagnostics.sourcesUsed.join(
+          ' + '
+        )
+
+      : null;
+
+
+  state.fundingDiagnostics[
+    symbol
+  ] = {
+
+    updatedAt:
+      Date.now(),
+
+    source,
+
+    events:
+      rows.length,
+
+    expectedApprox:
+      expected,
+
+    coverageRatio,
+
+    diagnostics
+
+  };
+
+
   return json(
 
     res,
@@ -3419,13 +4588,10 @@ async function handleFunding(
 
     {
 
-      ok:true,
+      ok:
+        true,
 
-      source:
-        'Binance Public Data fundingRate archive',
-
-      version:
-        VERSION,
+      source,
 
       symbol,
 
@@ -3451,20 +4617,34 @@ async function handleFunding(
         expectedApprox:
           expected,
 
-        coverageRatio:
-
-          expected > 0
-
-            ? rows.length /
-              expected
-
-            : null,
+        coverageRatio,
 
         gaps:
           gaps.slice(
             0,
             20
           ),
+
+        source,
+
+        apiHosts:
+          [
+            ...new Set(
+              diagnostics.api.hosts
+            )
+          ],
+
+        apiErrors:
+          diagnostics.api.errors,
+
+        archiveMonths:
+          diagnostics.archive.archiveMonths,
+
+        archiveErrors:
+          diagnostics.archive.archiveErrors,
+
+        fallback:
+          diagnostics.fallback,
 
         archiveBase:
           FUNDING_ARCHIVE_BASE
@@ -3485,9 +4665,13 @@ async function handleFunding(
  */
 
 async function handleMarket(
+
   req,
+
   res,
+
   u
+
 ){
 
   const symbol =
@@ -3642,7 +4826,10 @@ async function handleMarket(
           ),
 
         publicBase:
-          PUBLIC_BASE
+          PUBLIC_BASE,
+
+        publicFuturesBases:
+          PUBLIC_FAPI_BASES
 
       }
 
@@ -3660,8 +4847,11 @@ async function handleMarket(
  */
 
 function roundStep(
+
   v,
+
   step
+
 ){
 
   if(
@@ -3703,8 +4893,11 @@ function roundStep(
 
 
 function roundPrice(
+
   v,
+
   tick
+
 ){
 
   if(
@@ -3966,14 +5159,15 @@ function currentEquity(){
 /*
  * ============================================================
  * Capacity
- *
- * 最大 3 仓
  * ============================================================
  */
 
 function canOpen(
+
   symbol,
+
   plannedNotional = 0
+
 ){
 
   if(
@@ -4023,8 +5217,11 @@ function canOpen(
     state.positions.reduce(
 
       (
+
         a,
+
         p
+
       ) =>
 
         a +
@@ -4057,387 +5254,20 @@ function canOpen(
 
 /*
  * ============================================================
- * Protective Stop
- *
- * 止损自动重试。
- *
- * 正常情况：
- *
- * Entry
- * ↓
- * Stop
- *
- * Stop 失败：
- *
- * Retry 1
- * ↓
- * Retry 2
- * ↓
- * Retry 3
- * ↓
- * Emergency Flat
- *
- * ============================================================
- */
-
-async function placeProtectiveStop(
-  symbol,
-  stopSide,
-  stopPrice
-){
-
-  const f =
-    state.filters[
-      symbol
-    ] ||
-    {};
-
-
-  stopPrice =
-    roundPrice(
-      stopPrice,
-      f.tick
-    );
-
-
-  let lastError =
-    null;
-
-
-  const delays = [
-
-    0,
-
-    750,
-
-    1500
-
-  ];
-
-
-  for(
-    let attempt = 0;
-
-    attempt < delays.length;
-
-    attempt++
-
-  ){
-
-    if(
-      delays[attempt] > 0
-    ){
-
-      await new Promise(
-
-        resolve =>
-          setTimeout(
-            resolve,
-            delays[attempt]
-          )
-
-      );
-
-    }
-
-
-    try{
-
-      const stop =
-
-        await postForm(
-
-          '/fapi/v1/order',
-
-          {
-
-            symbol,
-
-            side:
-              stopSide,
-
-            type:
-              'STOP_MARKET',
-
-            stopPrice,
-
-            closePosition:
-              'true',
-
-            workingType:
-              'MARK_PRICE'
-
-          }
-
-        );
-
-
-      log(
-
-        'STOP_PLACED',
-
-        {
-
-          symbol,
-
-          stopPrice,
-
-          attempt:
-            attempt + 1,
-
-          orderId:
-            stop.orderId
-
-        }
-
-      );
-
-
-      return stop;
-
-    }catch(e){
-
-      lastError =
-        e;
-
-
-      log(
-
-        'STOP_RETRY_ERROR',
-
-        {
-
-          symbol,
-
-          stopPrice,
-
-          attempt:
-            attempt + 1,
-
-          error:
-            e.message
-
-        }
-
-      );
-
-    }
-
-  }
-
-
-  throw (
-
-    lastError ||
-
-    new Error(
-      'stop placement failed'
-    )
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * Emergency Market Close
- *
- * 用于：
- *
- * Entry 已经成功
- *
- * 但保护性 STOP_MARKET 连续失败。
- *
- * ============================================================
- */
-
-async function emergencyClosePosition(
-  symbol,
-  entrySide,
-  qty
-){
-
-  const closeSide =
-
-    entrySide === 'BUY'
-
-      ? 'SELL'
-      : 'BUY';
-
-
-  const f =
-    state.filters[
-      symbol
-    ] ||
-    {};
-
-
-  const closeQty =
-    roundStep(
-      Number(qty),
-      f.step
-    );
-
-
-  if(
-
-    !Number.isFinite(
-      closeQty
-    ) ||
-
-    closeQty <= 0
-
-  ){
-
-    throw new Error(
-      'Emergency close quantity invalid'
-    );
-
-  }
-
-
-  let lastError =
-    null;
-
-
-  for(
-
-    let attempt = 1;
-
-    attempt <= 2;
-
-    attempt++
-
-  ){
-
-    try{
-
-      const order =
-
-        await postForm(
-
-          '/fapi/v1/order',
-
-          {
-
-            symbol,
-
-            side:
-              closeSide,
-
-            type:
-              'MARKET',
-
-            quantity:
-              closeQty,
-
-            reduceOnly:
-              'true',
-
-            newOrderRespType:
-              'RESULT'
-
-          }
-
-        );
-
-
-      log(
-
-        'EMERGENCY_FLAT_SUCCESS',
-
-        {
-
-          symbol,
-
-          side:
-            closeSide,
-
-          quantity:
-            closeQty,
-
-          attempt,
-
-          orderId:
-            order.orderId
-
-        }
-
-      );
-
-
-      return order;
-
-    }catch(e){
-
-      lastError =
-        e;
-
-
-      log(
-
-        'EMERGENCY_FLAT_RETRY_ERROR',
-
-        {
-
-          symbol,
-
-          attempt,
-
-          error:
-            e.message
-
-        }
-
-      );
-
-
-      if(
-        attempt < 2
-      ){
-
-        await new Promise(
-
-          resolve =>
-            setTimeout(
-              resolve,
-              1000
-            )
-
-        );
-
-      }
-
-    }
-
-  }
-
-
-  throw (
-
-    lastError ||
-
-    new Error(
-      'Emergency flat failed'
-    )
-
-  );
-
-}
-
-
-/*
- * ============================================================
  * Place Entry
  * ============================================================
  */
 
 async function placeEntry(
+
   symbol,
+
   side,
+
   qty,
+
   stopPrice
+
 ){
 
   if(
@@ -4506,12 +5336,6 @@ async function placeEntry(
   }
 
 
-  /*
-   * ==========================================================
-   * 1. Entry
-   * ==========================================================
-   */
-
   const order =
     await postForm(
 
@@ -4537,19 +5361,6 @@ async function placeEntry(
     );
 
 
-  const executedQty =
-
-    Number(
-
-      order.executedQty ||
-
-      order.origQty ||
-
-      qty
-
-    );
-
-
   log(
 
     'ENTRY_FILLED',
@@ -4562,8 +5373,6 @@ async function placeEntry(
 
       qty,
 
-      executedQty,
-
       orderId:
         order.orderId
 
@@ -4572,58 +5381,79 @@ async function placeEntry(
   );
 
 
-  /*
-   * ==========================================================
-   * 2. 立即保护
-   * ==========================================================
-   */
-
   const stopSide =
 
     side === 'BUY'
+
       ? 'SELL'
+
       : 'BUY';
+
+
+  stopPrice =
+    roundPrice(
+      stopPrice,
+      f.tick
+    );
 
 
   try{
 
-    await placeProtectiveStop(
+    const stop =
 
-      symbol,
+      await postForm(
 
-      stopSide,
+        '/fapi/v1/order',
 
-      stopPrice
+        {
 
-    );
+          symbol,
 
-  }catch(e){
+          side:
+            stopSide,
 
-    /*
-     * ========================================================
-     * STOP 连续失败
-     *
-     * Entry 已经成功。
-     *
-     * 不能把这个情况当成普通 Entry Error。
-     *
-     * 尝试紧急平仓。
-     * ========================================================
-     */
+          type:
+            'STOP_MARKET',
+
+          stopPrice,
+
+          closePosition:
+            'true',
+
+          workingType:
+            'MARK_PRICE'
+
+        }
+
+      );
+
 
     log(
 
-      'STOP_PROTECTION_FAILED',
+      'STOP_PLACED',
 
       {
 
         symbol,
 
-        side,
-
-        executedQty,
-
         stopPrice,
+
+        orderId:
+          stop.orderId
+
+      }
+
+    );
+
+  }catch(e){
+
+    log(
+
+      'STOP_ERROR',
+
+      {
+
+        symbol,
 
         error:
           e.message
@@ -4633,121 +5463,7 @@ async function placeEntry(
     );
 
 
-    try{
-
-      await emergencyClosePosition(
-
-        symbol,
-
-        side,
-
-        executedQty
-
-      );
-
-
-      try{
-
-        await syncAccount();
-
-      }catch{}
-
-      throw new Error(
-
-        `${symbol} stop protection failed; emergency flat executed`
-
-      );
-
-    }catch(flatError){
-
-      /*
-       * 如果 flat 本身是我们刚才已经执行成功
-       * 后抛出的错误，则不要重复记录为未保护。
-       */
-
-      if(
-
-        String(
-          flatError.message
-        ).includes(
-          'emergency flat executed'
-        )
-
-      ){
-
-        throw flatError;
-
-      }
-
-
-      /*
-       * ======================================================
-       * 最危险状态：
-       *
-       * Entry 成功
-       * Stop 失败
-       * Emergency Flat 也失败
-       *
-       * 必须明确记录。
-       * ======================================================
-       */
-
-      log(
-
-        'UNPROTECTED_POSITION',
-
-        {
-
-          symbol,
-
-          side,
-
-          executedQty,
-
-          stopPrice,
-
-          stopError:
-            e.message,
-
-          emergencyFlatError:
-            flatError.message
-
-        }
-
-      );
-
-
-      try{
-
-        await syncAccount();
-
-      }catch(syncError){
-
-        log(
-
-          'UNPROTECTED_POSITION_SYNC_ERROR',
-
-          {
-
-            symbol,
-
-            error:
-              syncError.message
-
-          }
-
-        );
-
-      }
-
-
-      throw new Error(
-
-        `${symbol} CRITICAL: entry filled but stop protection and emergency flat both failed`
-
-      );
-
-    }
+    throw e;
 
   }
 
@@ -4760,8 +5476,6 @@ async function placeEntry(
 /*
  * ============================================================
  * Evaluate Symbol
- *
- * 正式策略逻辑保持不变。
  * ============================================================
  */
 
@@ -4816,10 +5530,6 @@ async function evaluateSymbol(
 
   }
 
-
-  /*
-   * 最新 K 线可能还没有结束。
-   */
 
   const now =
     Date.now();
@@ -5516,6 +6226,7 @@ async function runCycle(){
       if(
         r.closedAt <=
         last
+
       ){
 
         continue;
@@ -5671,6 +6382,7 @@ async function runCycle(){
                 r.signal.side === 'LONG'
 
                   ? 'BUY'
+
                   : 'SELL';
 
 
@@ -5805,6 +6517,7 @@ async function startUserStream(){
       'open',
 
       () =>
+
         log(
           'USER_WS_CONNECTED'
         )
@@ -5976,13 +6689,6 @@ async function startUserStream(){
 
 async function init(){
 
-  /*
-   * Demo/Testnet 账户接口不可用时，
-   * 不再让整个本地服务退出。
-   *
-   * Funding / 行情诊断仍然可以运行。
-   */
-
   try{
 
     await loadExchangeInfo();
@@ -6057,6 +6763,9 @@ async function init(){
       publicBase:
         PUBLIC_BASE,
 
+      publicFuturesBases:
+        PUBLIC_FAPI_BASES,
+
       autoTrade:
         AUTO_TRADE,
 
@@ -6111,9 +6820,13 @@ async function init(){
  */
 
 function json(
+
   res,
+
   status,
+
   data
+
 ){
 
   res.writeHead(
@@ -6126,7 +6839,10 @@ function json(
         'application/json; charset=utf-8',
 
       'Access-Control-Allow-Origin':
-        '*'
+        '*',
+
+      'Cache-Control':
+        'no-store'
 
     }
 
@@ -6149,8 +6865,11 @@ function json(
  */
 
 async function route(
+
   req,
+
   res
+
 ){
 
   const u =
@@ -6194,7 +6913,10 @@ async function route(
             AUTO_TRADE,
 
           base:
-            BASE
+            BASE,
+
+          publicFuturesBases:
+            PUBLIC_FAPI_BASES
 
         }
 
@@ -6392,6 +7114,41 @@ async function route(
 
     ){
 
+      const symbol =
+        (
+          u.searchParams.get(
+            'symbol'
+          ) ||
+          ''
+        )
+          .trim()
+          .toUpperCase();
+
+
+      if(
+        !symbol
+      ){
+
+        return json(
+
+          res,
+
+          400,
+
+          {
+
+            ok:false,
+
+            error:
+              'symbol required'
+
+          }
+
+        );
+
+      }
+
+
       return json(
 
         res,
@@ -6407,9 +7164,7 @@ async function route(
 
             await getKlines(
 
-              u.searchParams.get(
-                'symbol'
-              ),
+              symbol,
 
               u.searchParams.get(
                 'interval'
@@ -6421,13 +7176,19 @@ async function route(
 
                 500,
 
-                Number(
+                Math.max(
 
-                  u.searchParams.get(
-                    'limit'
-                  ) ||
+                  1,
 
-                  200
+                  Number(
+
+                    u.searchParams.get(
+                      'limit'
+                    ) ||
+
+                    200
+
+                  )
 
                 )
 
@@ -6469,6 +7230,38 @@ async function route(
             state.exchangeInfo ||
 
             await loadExchangeInfo()
+
+        }
+
+      );
+
+    }
+
+
+    /*
+     * Funding Diagnostics
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/funding/diagnostics'
+
+    ){
+
+      return json(
+
+        res,
+
+        200,
+
+        {
+
+          ok:
+            true,
+
+          data:
+            state.fundingDiagnostics
 
         }
 
@@ -6660,9 +7453,6 @@ async function route(
 
     /*
      * Frontend
-     *
-     * 保持原文件名，
-     * 避免前端文件名发生不必要变化。
      */
 
     if(
@@ -6735,6 +7525,23 @@ async function route(
 
   }catch(e){
 
+    log(
+
+      'ROUTE_ERROR',
+
+      {
+
+        path:
+          u.pathname,
+
+        error:
+          e.message
+
+      }
+
+    );
+
+
     return json(
 
       res,
@@ -6765,9 +7572,13 @@ async function route(
  */
 
 function sendFile(
+
   res,
+
   p,
+
   type
+
 ){
 
   try{
