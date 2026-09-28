@@ -1,24 +1,61 @@
-const express = require("express");
-const path = require("path");
-const AdmZip = require("adm-zip");
+const http = require('http');
+const https = require('https');
+const dns = require('dns');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { WebSocket } = require('ws');
+const AdmZip = require('adm-zip');
+const { URL } = require('url');
 
-const app = express();
+function loadEnv(){
+  const p=path.join(__dirname,'.env');
+  if(!fs.existsSync(p)) return;
 
-app.use(express.static(__dirname));
+  for(const line of fs.readFileSync(p,'utf8').split(/\r?\n/)){
+    const s=line.trim();
+
+    if(!s || s.startsWith('#')) continue;
+
+    const i=s.indexOf('=');
+
+    if(i<0) continue;
+
+    const k=s.slice(0,i).trim();
+
+    const v=s
+      .slice(i+1)
+      .trim()
+      .replace(/^['"]|['"]$/g,'');
+
+    if(process.env[k]===undefined){
+      process.env[k]=v;
+    }
+  }
+}
+
+loadEnv();
 
 
 /*
  * ============================================================
- * Quant V3.7.6 · OOS 数据服务器
+ * Quant V3.7.18.10
  *
  * Binance USD-M Futures
  *
- * K线数据：
- * Binance Public Data
+ * 后端服务器
  *
- * Funding：
- * Binance USD-M Futures
- * /fapi/v1/fundingRate
+ * 本版本重点：
+ *
+ * 1. 保留原正式交易框架
+ * 2. 保留 3 仓限制
+ * 3. 保留原风险参数
+ * 4. 保留 Demo/Testnet 安全闸门
+ * 5. 保留原行情接口
+ * 6. Funding 改为 Binance Public Data 历史归档
+ * 7. Funding 不再依赖受限地区的实时 Funding API
+ * 8. Funding 数据加入完整性诊断
+ * 9. Funding 没有真实数据时绝不伪造
  *
  * ============================================================
  */
@@ -26,202 +63,1986 @@ app.use(express.static(__dirname));
 
 /*
  * ============================================================
- * Server Version
+ * 网络兼容
  * ============================================================
  */
 
-const SERVER_VERSION =
-  "V3.7.6";
+try{
 
-
-/*
- * ============================================================
- * Binance 数据源
- * ============================================================
- */
-
-const BINANCE_DATA_BASE =
-  "https://data.binance.vision";
-
-
-/*
- * ============================================================
- * Binance Funding API
- * ============================================================
- */
-
-const BINANCE_FUNDING_BASE =
-  "https://fapi.binance.com";
-
-
-/*
- * ============================================================
- * 固定 OOS
- * ============================================================
- */
-
-const DEFAULT_OOS_START =
-  Date.parse(
-    "2026-09-01T00:00:00.000Z"
+  dns.setDefaultResultOrder(
+    'ipv4first'
   );
 
+}catch{}
 
-const DEFAULT_OOS_END =
-  Date.parse(
-    "2026-09-26T00:00:00.000Z"
+
+/*
+ * ============================================================
+ * 基础配置
+ * ============================================================
+ */
+
+const PORT =
+  Number(
+    process.env.PORT || 8787
   );
 
 
 /*
  * ============================================================
- * Warmup
+ * Demo / Testnet 交易地址
+ *
+ * 注意：
+ *
+ * 这里只允许 Demo / Testnet。
+ *
  * ============================================================
  */
 
-const DEFAULT_WARMUP_START =
-  Date.parse(
-    "2026-07-01T00:00:00.000Z"
+const BASE =
+  process.env.BINANCE_FUTURES_BASE_URL ||
+  'https://demo-fapi.binance.com';
+
+
+/*
+ * ============================================================
+ * Public Market Data
+ *
+ * 只读。
+ *
+ * ============================================================
+ */
+
+const PUBLIC_BASE =
+  process.env.BINANCE_PUBLIC_FUTURES_BASE_URL ||
+  'https://fapi.binance.com';
+
+
+/*
+ * ============================================================
+ * WebSocket
+ * ============================================================
+ */
+
+const WS_BASE =
+  process.env.BINANCE_FUTURES_WS_URL ||
+  'wss://fstream.binancefuture.com';
+
+
+/*
+ * ============================================================
+ * API Key
+ * ============================================================
+ */
+
+const API_KEY =
+  process.env.BINANCE_API_KEY ||
+  '';
+
+
+const API_SECRET =
+  process.env.BINANCE_API_SECRET ||
+  '';
+
+
+/*
+ * ============================================================
+ * 自动交易
+ * ============================================================
+ */
+
+const AUTO_TRADE =
+  String(
+    process.env.AUTO_TRADE || 'false'
+  ).toLowerCase() === 'true';
+
+
+/*
+ * ============================================================
+ * Symbols
+ * ============================================================
+ */
+
+const SYMBOLS =
+  (
+    process.env.SYMBOLS ||
+    'SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,SUIUSDT,APTUSDT,NEARUSDT,INJUSDT'
+  )
+    .split(',')
+    .map(
+      x =>
+        x
+          .trim()
+          .toUpperCase()
+    )
+    .filter(Boolean);
+
+
+/*
+ * ============================================================
+ * 风险参数
+ * ============================================================
+ */
+
+const RISK =
+  Number(
+    process.env.INITIAL_RISK ||
+    0.005
   );
 
 
 /*
  * ============================================================
- * 下载控制
+ * 最大仓位
+ *
+ * 保持 3 仓
  * ============================================================
  */
 
-const DOWNLOAD_CONCURRENCY =
-  4;
-
-
-const DOWNLOAD_TIMEOUT =
-  45 * 1000;
-
-
-const MAX_RETRIES =
-  2;
-
-
-const RETRY_BASE_DELAY =
-  1500;
+const MAX_POSITIONS =
+  Number(
+    process.env.MAX_POSITIONS ||
+    3
+  );
 
 
 /*
  * ============================================================
- * Funding 控制
+ * 最大入场杠杆
  * ============================================================
  */
 
-const FUNDING_TIMEOUT =
-  30 * 1000;
+const MAX_ENTRY_LEVERAGE =
+  Number(
+    process.env.MAX_ENTRY_LEVERAGE ||
+    1.75
+  );
 
 
-const FUNDING_LIMIT =
-  1000;
+const LEVERAGE_BUFFER =
+  Number(
+    process.env.LEVERAGE_BUFFER ||
+    0.95
+  );
 
 
 /*
  * ============================================================
- * 下载队列
+ * ATR
  * ============================================================
  */
 
-let activeDownloads =
-  0;
-
-
-const downloadQueue =
-  [];
+const ATR_MULTIPLIER =
+  Number(
+    process.env.ATR_MULTIPLIER ||
+    1.8
+  );
 
 
 /*
  * ============================================================
- * Cache
+ * Pullback
  * ============================================================
  */
 
-const zipCache =
-  new Map();
+const PULLBACK_LOOKBACK =
+  Number(
+    process.env.PULLBACK_LOOKBACK ||
+    6
+  );
 
 
-const historicalCache =
-  new Map();
-
-
-const marketRequestCache =
-  new Map();
-
-
-const fundingCache =
-  new Map();
-
-
-const fundingRequestCache =
-  new Map();
-
-
-const progressState =
-  new Map();
+const MAX_PULLBACK_AGE =
+  Number(
+    process.env.MAX_PULLBACK_AGE ||
+    3
+  );
 
 
 /*
  * ============================================================
- * 下载统计
+ * Breakout
  * ============================================================
  */
 
-const downloadStats = {
-
-  totalRequested:
-    0,
-
-  queueAdded:
-    0,
-
-  cacheHits:
-    0,
-
-  promiseHits:
-    0,
-
-  completed:
-    0,
-
-  notFound:
-    0,
-
-  failed:
-    0,
-
-  retried:
-    0
-
-};
+const BREAKOUT_ATR_BUFFER =
+  Number(
+    process.env.BREAKOUT_ATR_BUFFER ||
+    0.20
+  );
 
 
 /*
  * ============================================================
- * 时间
+ * EMA
  * ============================================================
  */
 
-function nowIso(){
+const EMA_SLOPE_LOOKBACK =
+  Number(
+    process.env.EMA_SLOPE_LOOKBACK ||
+    3
+  );
 
-  return new Date()
-    .toISOString();
+
+const MIN_LONG_CLOSE_LOCATION =
+  Number(
+    process.env.MIN_LONG_CLOSE_LOCATION ||
+    0.72
+  );
+
+
+const MAX_SHORT_CLOSE_LOCATION =
+  Number(
+    process.env.MAX_SHORT_CLOSE_LOCATION ||
+    0.24
+  );
+
+
+const MIN_15_EMA_GAP =
+  Number(
+    process.env.MIN_15_EMA_GAP ||
+    0.0025
+  );
+
+
+const MIN_1H_EMA_GAP =
+  Number(
+    process.env.MIN_1H_EMA_GAP ||
+    0.0020
+  );
+
+
+/*
+ * ============================================================
+ * Breakout Body
+ * ============================================================
+ */
+
+const MIN_BREAKOUT_BODY_ATR =
+  Number(
+    process.env.MIN_BREAKOUT_BODY_ATR ||
+    0.35
+  );
+
+
+const MIN_SHORT_BODY_ATR =
+  Number(
+    process.env.MIN_SHORT_BODY_ATR ||
+    0.45
+  );
+
+
+/*
+ * ============================================================
+ * Stop
+ * ============================================================
+ */
+
+const MAX_STOP_ATR =
+  Number(
+    process.env.MAX_STOP_ATR ||
+    2.6
+  );
+
+
+/*
+ * ============================================================
+ * Signal Quality
+ * ============================================================
+ */
+
+const MIN_SIGNAL_QUALITY =
+  Number(
+    process.env.MIN_SIGNAL_QUALITY ||
+    70
+  );
+
+
+const SHORT_MIN_SIGNAL_QUALITY =
+  Number(
+    process.env.SHORT_MIN_SIGNAL_QUALITY ||
+    74
+  );
+
+
+const QUALITY_GAP_CAP =
+  Number(
+    process.env.QUALITY_GAP_CAP ||
+    0.02
+  );
+
+
+const ENTRY_COOLDOWN_BARS =
+  Number(
+    process.env.ENTRY_COOLDOWN_BARS ||
+    4
+  );
+
+
+/*
+ * ============================================================
+ * 安全闸门
+ *
+ * 禁止生产环境。
+ * ============================================================
+ */
+
+if(
+  !/demo-fapi\.binance\.com|testnet\.binancefuture\.com/i.test(
+    BASE
+  )
+){
+
+  throw new Error(
+
+    'SAFETY STOP: BINANCE_FUTURES_BASE_URL must be a Demo/Testnet host. Production fapi.binance.com is refused.'
+
+  );
 
 }
 
 
 /*
  * ============================================================
- * 日期参数
+ * State
  * ============================================================
  */
 
-function parseDateParam(
+const state = {
 
-  value,
+  startedAt:
+    Date.now(),
+
+  running:
+    AUTO_TRADE,
+
+  lastCycle:
+    null,
+
+  lastSignals:
+    [],
+
+  logs:
+    [],
+
+  exchangeInfo:
+    null,
+
+  filters:
+    {},
+
+  positions:
+    [],
+
+  account:
+    null,
+
+  lastClosed15m:
+    {}
+
+};
+
+
+/*
+ * ============================================================
+ * Log
+ * ============================================================
+ */
+
+function log(
+
+  msg,
+
+  extra
+
+){
+
+  const line =
+
+    new Date()
+      .toISOString() +
+
+    ' ' +
+
+    msg +
+
+    (
+
+      extra
+
+        ? ' ' +
+          JSON.stringify(extra)
+
+        : ''
+
+    );
+
+
+  state.logs.unshift(
+    line
+  );
+
+
+  state.logs =
+    state.logs.slice(
+      0,
+      300
+    );
+
+
+  console.log(
+    line
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Clamp
+ * ============================================================
+ */
+
+function clamp(
+
+  x,
+
+  a,
+
+  b
+
+){
+
+  return Math.max(
+
+    a,
+
+    Math.min(
+      b,
+      x
+    )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * EMA
+ * ============================================================
+ */
+
+function ema(
+
+  values,
+
+  p
+
+){
+
+  if(
+    !values.length
+  ){
+
+    return [];
+
+  }
+
+
+  const k =
+    2 /
+    (
+      p + 1
+    );
+
+
+  const out =
+    new Array(
+      values.length
+    );
+
+
+  let e =
+    values[0];
+
+
+  out[0] =
+    e;
+
+
+  for(
+
+    let i = 1;
+
+    i < values.length;
+
+    i++
+
+  ){
+
+    e =
+      values[i] *
+      k +
+
+      e *
+      (
+        1 - k
+      );
+
+
+    out[i] =
+      e;
+
+  }
+
+
+  return out;
+
+}
+
+
+/*
+ * ============================================================
+ * ATR
+ * ============================================================
+ */
+
+function atr(
+
+  data,
+
+  p = 14
+
+){
+
+  const out =
+    new Array(
+      data.length
+    ).fill(
+      NaN
+    );
+
+
+  const tr =
+    new Array(
+      data.length
+    ).fill(
+      NaN
+    );
+
+
+  if(
+    data.length <= p
+  ){
+
+    return out;
+
+  }
+
+
+  for(
+
+    let i = 1;
+
+    i < data.length;
+
+    i++
+
+  ){
+
+    const pc =
+      data[
+        i - 1
+      ].close;
+
+
+    tr[i] =
+      Math.max(
+
+        data[i].high -
+        data[i].low,
+
+        Math.abs(
+          data[i].high -
+          pc
+        ),
+
+        Math.abs(
+          data[i].low -
+          pc
+        )
+
+      );
+
+  }
+
+
+  let sum =
+    0;
+
+
+  for(
+
+    let i = 1;
+
+    i <= p;
+
+    i++
+
+  ){
+
+    sum +=
+      tr[i];
+
+  }
+
+
+  let cur =
+    sum / p;
+
+
+  out[p] =
+    cur;
+
+
+  for(
+
+    let i = p + 1;
+
+    i < data.length;
+
+    i++
+
+  ){
+
+    cur =
+
+      (
+
+        cur *
+        (
+          p - 1
+        )
+
+      +
+
+        tr[i]
+
+      ) / p;
+
+
+    out[i] =
+      cur;
+
+  }
+
+
+  return out;
+
+}
+
+
+/*
+ * ============================================================
+ * Gap
+ * ============================================================
+ */
+
+function gap(
+
+  a,
+
+  b
+
+){
+
+  return (
+
+    Math.abs(
+      a - b
+    ) /
+
+    Math.max(
+      Math.abs(b),
+      1e-12
+    )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Clamp 0-1
+ * ============================================================
+ */
+
+function clamp01(
+  x
+){
+
+  return clamp(
+    x,
+    0,
+    1
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Normalize Gap
+ * ============================================================
+ */
+
+function normGap(
+  g
+){
+
+  return clamp01(
+
+    g /
+    QUALITY_GAP_CAP
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Candle Body
+ * ============================================================
+ */
+
+function body(
+  c
+){
+
+  return Math.abs(
+
+    c.close -
+    c.open
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Candle Location
+ * ============================================================
+ */
+
+function loc(
+  c
+){
+
+  const r =
+    c.high -
+    c.low;
+
+
+  return r > 0
+
+    ? (
+        c.close -
+        c.low
+      ) / r
+
+    : 0.5;
+
+}
+
+
+/*
+ * ============================================================
+ * Long Pullback
+ * ============================================================
+ */
+
+function longPB(
+
+  data,
+
+  e20,
+
+  i
+
+){
+
+  const start =
+    Math.max(
+
+      1,
+
+      i -
+      PULLBACK_LOOKBACK
+
+    );
+
+
+  for(
+
+    let j = i - 1;
+
+    j >= start;
+
+    j--
+
+  ){
+
+    if(
+
+      data[j].low <=
+        e20[j] &&
+
+      data[j].close <=
+        e20[j]
+
+    ){
+
+      return j;
+
+    }
+
+  }
+
+
+  return -1;
+
+}
+
+
+/*
+ * ============================================================
+ * Short Pullback
+ * ============================================================
+ */
+
+function shortPB(
+
+  data,
+
+  e20,
+
+  i
+
+){
+
+  const start =
+    Math.max(
+
+      1,
+
+      i -
+      PULLBACK_LOOKBACK
+
+    );
+
+
+  for(
+
+    let j = i - 1;
+
+    j >= start;
+
+    j--
+
+  ){
+
+    if(
+
+      data[j].high >=
+        e20[j] &&
+
+      data[j].close >=
+        e20[j]
+
+    ){
+
+      return j;
+
+    }
+
+  }
+
+
+  return -1;
+
+}
+
+
+/*
+ * ============================================================
+ * Quality
+ * ============================================================
+ */
+
+function quality(
+
+  side,
+
+  vals
+
+){
+
+  let s =
+    0;
+
+
+  const aligned =
+
+    side === 'LONG'
+
+      ? [
+          vals.b4,
+          vals.b1,
+          vals.b15
+        ].filter(Boolean).length
+
+      : [
+          vals.s4,
+          vals.s1,
+          vals.s15
+        ].filter(Boolean).length;
+
+
+  s +=
+    aligned *
+    (
+      25 / 3
+    );
+
+
+  s +=
+    20 *
+    normGap(
+      vals.g1
+    );
+
+
+  s +=
+    15 *
+    normGap(
+      vals.g15
+    );
+
+
+  if(
+
+    side === 'LONG'
+
+      ? vals.slopeBull
+
+      : vals.slopeBear
+
+  ){
+
+    s += 10;
+
+  }
+
+
+  if(
+    vals.fresh
+  ){
+
+    s += 10;
+
+  }
+
+
+  s +=
+
+    10 *
+    clamp01(
+      vals.bodyAtr / 1
+    );
+
+
+  const l =
+
+    side === 'LONG'
+
+      ? vals.closeLoc
+
+      : 1 -
+        vals.closeLoc;
+
+
+  s +=
+
+    10 *
+    clamp01(
+      (
+        l -
+        0.5
+      ) / 0.5
+    );
+
+
+  return clamp(
+    s,
+    0,
+    100
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Kline
+ * ============================================================
+ */
+
+function candleFromK(
+  k
+){
+
+  return {
+
+    openTime:
+      +k[0],
+
+    open:
+      +k[1],
+
+    high:
+      +k[2],
+
+    low:
+      +k[3],
+
+    close:
+      +k[4],
+
+    volume:
+      +k[5],
+
+    closeTime:
+      +k[6]
+
+  };
+
+}
+
+
+/*
+ * ============================================================
+ * Query String
+ * ============================================================
+ */
+
+function qs(
+  params
+){
+
+  return new URLSearchParams(
+    params
+  ).toString();
+
+}
+
+
+/*
+ * ============================================================
+ * Signature
+ * ============================================================
+ */
+
+function sign(
+  params
+){
+
+  const q =
+    qs(
+      params
+    );
+
+
+  return (
+
+    q +
+
+    '&signature=' +
+
+    crypto
+      .createHmac(
+        'sha256',
+        API_SECRET
+      )
+      .update(q)
+      .digest('hex')
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * HTTP Text Request
+ * ============================================================
+ */
+
+function requestText(
+
+  url,
+
+  options = {}
+
+){
+
+  return new Promise(
+
+    (
+
+      resolve,
+
+      reject
+
+    ) => {
+
+      const u =
+        new URL(
+          url
+        );
+
+
+      const isHttps =
+        u.protocol ===
+        'https:';
+
+
+      const client =
+        isHttps
+          ? https
+          : http;
+
+
+      const req =
+        client.request(
+
+          {
+
+            protocol:
+              u.protocol,
+
+            hostname:
+              u.hostname,
+
+            port:
+              u.port ||
+              undefined,
+
+            path:
+              u.pathname +
+              u.search,
+
+            method:
+              options.method ||
+              'GET',
+
+            headers:
+              options.headers ||
+              {},
+
+            family:
+              4,
+
+            timeout:
+              Math.min(
+
+                Number(
+                  options.timeout ||
+                  30000
+                ),
+
+                120000
+
+              )
+
+          },
+
+          res => {
+
+            let text =
+              '';
+
+
+            res.setEncoding(
+              'utf8'
+            );
+
+
+            res.on(
+              'data',
+              c =>
+                text += c
+            );
+
+
+            res.on(
+
+              'end',
+
+              () => {
+
+                resolve({
+
+                  status:
+                    res.statusCode ||
+                    0,
+
+                  headers:
+                    res.headers,
+
+                  text
+
+                });
+
+              }
+
+            );
+
+          }
+
+        );
+
+
+      req.on(
+
+        'timeout',
+
+        () =>
+
+          req.destroy(
+            new Error(
+              'request timeout'
+            )
+          )
+
+      );
+
+
+      req.on(
+        'error',
+        reject
+      );
+
+
+      if(
+        options.body
+      ){
+
+        req.write(
+          options.body
+        );
+
+      }
+
+
+      req.end();
+
+    }
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * HTTP Buffer Request
+ * ============================================================
+ */
+
+function requestBuffer(
+
+  url,
+
+  options = {}
+
+){
+
+  return new Promise(
+
+    (
+
+      resolve,
+
+      reject
+
+    ) => {
+
+      const u =
+        new URL(
+          url
+        );
+
+
+      const isHttps =
+        u.protocol ===
+        'https:';
+
+
+      const client =
+        isHttps
+          ? https
+          : http;
+
+
+      const req =
+        client.request(
+
+          {
+
+            protocol:
+              u.protocol,
+
+            hostname:
+              u.hostname,
+
+            port:
+              u.port ||
+              undefined,
+
+            path:
+              u.pathname +
+              u.search,
+
+            method:
+              options.method ||
+              'GET',
+
+            headers:
+              options.headers ||
+              {},
+
+            family:
+              4,
+
+            timeout:
+              Math.min(
+
+                Number(
+                  options.timeout ||
+                  60000
+                ),
+
+                120000
+
+              )
+
+          },
+
+          res => {
+
+            const chunks =
+              [];
+
+
+            res.on(
+
+              'data',
+
+              c =>
+                chunks.push(
+                  Buffer.from(c)
+                )
+
+            );
+
+
+            res.on(
+
+              'end',
+
+              () => {
+
+                resolve({
+
+                  status:
+                    res.statusCode ||
+                    0,
+
+                  headers:
+                    res.headers,
+
+                  buffer:
+                    Buffer.concat(
+                      chunks
+                    )
+
+                });
+
+              }
+
+            );
+
+          }
+
+        );
+
+
+      req.on(
+
+        'timeout',
+
+        () =>
+
+          req.destroy(
+            new Error(
+              'request timeout'
+            )
+          )
+
+      );
+
+
+      req.on(
+        'error',
+        reject
+      );
+
+
+      req.end();
+
+    }
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * JSON Request
+ * ============================================================
+ */
+
+async function requestJson(
+
+  url,
+
+  options = {}
+
+){
+
+  let lastErr =
+    null;
+
+
+  for(
+
+    let attempt = 0;
+
+    attempt < 2;
+
+    attempt++
+
+  ){
+
+    try{
+
+      const r =
+        await requestText(
+          url,
+          options
+        );
+
+
+      let data;
+
+
+      try{
+
+        data =
+          JSON.parse(
+            r.text
+          );
+
+      }catch{
+
+        throw new Error(
+
+          'Binance non-JSON ' +
+
+          r.status +
+
+          ': ' +
+
+          r.text.slice(
+            0,
+            300
+          )
+
+        );
+
+      }
+
+
+      if(
+
+        r.status < 200 ||
+
+        r.status >= 300 ||
+
+        (
+          data &&
+          data.code < 0
+        )
+
+      ){
+
+        throw new Error(
+
+          `Binance ${r.status}: ` +
+
+          `${
+            data?.msg ||
+            r.text
+          }`
+
+        );
+
+      }
+
+
+      return data;
+
+    }catch(e){
+
+      lastErr =
+        e;
+
+
+      if(
+        attempt === 0
+      ){
+
+        await new Promise(
+
+          r =>
+            setTimeout(
+              r,
+              500
+            )
+
+        );
+
+      }
+
+    }
+
+  }
+
+
+  throw (
+
+    lastErr ||
+
+    new Error(
+      'request failed'
+    )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Demo API
+ * ============================================================
+ */
+
+async function api(
+
+  method,
+
+  pathName,
+
+  params = {},
+
+  signed = false
+
+){
+
+  const p =
+    {
+      ...params
+    };
+
+
+  if(
+    signed
+  ){
+
+    p.timestamp =
+      Date.now();
+
+
+    p.recvWindow =
+      5000;
+
+  }
+
+
+  const query =
+    signed
+
+      ? sign(p)
+
+      : qs(p);
+
+
+  const url =
+
+    BASE +
+
+    pathName +
+
+    (
+      query
+
+        ? '?' +
+          query
+
+        : ''
+    );
+
+
+  const headers =
+    {};
+
+
+  if(
+    API_KEY
+  ){
+
+    headers[
+      'X-MBX-APIKEY'
+    ] =
+      API_KEY;
+
+  }
+
+
+  return requestJson(
+
+    url,
+
+    {
+
+      method,
+
+      headers,
+
+      timeout:
+        30000
+
+    }
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * POST Form
+ * ============================================================
+ */
+
+async function postForm(
+
+  pathName,
+
+  params = {},
+
+  signed = true
+
+){
+
+  const p =
+    {
+      ...params
+    };
+
+
+  if(
+    signed
+  ){
+
+    p.timestamp =
+      Date.now();
+
+    p.recvWindow =
+      5000;
+
+  }
+
+
+  const q =
+
+    signed
+
+      ? sign(p)
+
+      : qs(p);
+
+
+  const r =
+    await fetch(
+
+      BASE +
+      pathName,
+
+      {
+
+        method:
+          'POST',
+
+        headers:{
+
+          'Content-Type':
+            'application/x-www-form-urlencoded',
+
+          'X-MBX-APIKEY':
+            API_KEY
+
+        },
+
+        body:
+          q
+
+      }
+
+    );
+
+
+  const text =
+    await r.text();
+
+
+  let d;
+
+
+  try{
+
+    d =
+      JSON.parse(
+        text
+      );
+
+  }catch{
+
+    throw new Error(
+      text
+    );
+
+  }
+
+
+  if(
+
+    !r.ok ||
+
+    d.code < 0
+
+  ){
+
+    throw new Error(
+
+      `Binance ${r.status}: ` +
+
+      (
+        d.msg ||
+        text
+      )
+
+    );
+
+  }
+
+
+  return d;
+
+}
+
+
+/*
+ * ============================================================
+ * PUT Form
+ * ============================================================
+ */
+
+async function putForm(
+
+  pathName,
+
+  params = {}
+
+){
+
+  const p =
+
+    {
+
+      ...params,
+
+      timestamp:
+        Date.now(),
+
+      recvWindow:
+        5000
+
+    };
+
+
+  const q =
+    sign(p);
+
+
+  const r =
+    await fetch(
+
+      BASE +
+      pathName,
+
+      {
+
+        method:
+          'PUT',
+
+        headers:{
+
+          'Content-Type':
+            'application/x-www-form-urlencoded',
+
+          'X-MBX-APIKEY':
+            API_KEY
+
+        },
+
+        body:
+          q
+
+      }
+
+    );
+
+
+  const t =
+    await r.text();
+
+
+  let d;
+
+
+  try{
+
+    d =
+      JSON.parse(
+        t
+      );
+
+  }catch{
+
+    throw new Error(
+      t
+    );
+
+  }
+
+
+  if(
+
+    !r.ok ||
+
+    d.code < 0
+
+  ){
+
+    throw new Error(
+
+      `Binance ${r.status}: ` +
+
+      (
+        d.msg ||
+        t
+      )
+
+    );
+
+  }
+
+
+  return d;
+
+}
+
+
+/*
+ * ============================================================
+ * Live Klines
+ * ============================================================
+ */
+
+async function getKlines(
+
+  symbol,
+
+  interval,
+
+  limit = 300
+
+){
+
+  const a =
+    await api(
+
+      'GET',
+
+      '/fapi/v1/klines',
+
+      {
+
+        symbol,
+
+        interval,
+
+        limit
+
+      }
+
+    );
+
+
+  return a.map(
+    candleFromK
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Parse Time
+ * ============================================================
+ */
+
+function parseTime(
+
+  v,
 
   fallback
 
@@ -229,11 +2050,11 @@ function parseDateParam(
 
   if(
 
-    value === undefined ||
+    v === undefined ||
 
-    value === null ||
+    v === null ||
 
-    value === ""
+    v === ''
 
   ){
 
@@ -242,8 +2063,21 @@ function parseDateParam(
   }
 
 
+  if(
+    typeof v === 'number'
+  ){
+
+    return v < 1e12
+
+      ? v * 1000
+
+      : v;
+
+  }
+
+
   const n =
-    Number(value);
+    Number(v);
 
 
   if(
@@ -251,7 +2085,9 @@ function parseDateParam(
   ){
 
     return n < 1e12
+
       ? n * 1000
+
       : n;
 
   }
@@ -259,1355 +2095,100 @@ function parseDateParam(
 
   const t =
     Date.parse(
-      String(value)
+      String(v)
     );
 
 
   return Number.isFinite(t)
+
     ? t
-    : NaN;
+
+    : fallback;
 
 }
 
 
 /*
  * ============================================================
- * UTC 月初
+ * Interval
  * ============================================================
  */
 
-function floorUtcMonth(
-  timestamp
-){
+const INTERVAL_MS = {
 
-  const date =
-    new Date(timestamp);
+  '15m':
+    15 *
+    60 *
+    1000,
 
+  '1h':
+    60 *
+    60 *
+    1000,
 
-  return Date.UTC(
+  '4h':
+    4 *
+    60 *
+    60 *
+    1000
 
-    date.getUTCFullYear(),
-
-    date.getUTCMonth(),
-
-    1
-
-  );
-
-}
+};
 
 
 /*
  * ============================================================
- * UTC 月份增加
+ * Public API
  * ============================================================
  */
 
-function addUtcMonths(
+async function publicApi(
 
-  timestamp,
+  pathName,
 
-  delta
-
-){
-
-  const date =
-    new Date(timestamp);
-
-
-  return Date.UTC(
-
-    date.getUTCFullYear(),
-
-    date.getUTCMonth() + delta,
-
-    1
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * 月份范围
- * ============================================================
- */
-
-function monthRange(
-
-  startMs,
-
-  endMs
+  params = {}
 
 ){
 
-  const start =
-    floorUtcMonth(
-      startMs
+  const query =
+    qs(params);
+
+
+  const url =
+
+    PUBLIC_BASE +
+
+    pathName +
+
+    (
+      query
+
+        ? '?' +
+          query
+
+        : ''
     );
 
 
-  const last =
-    floorUtcMonth(
-
-      Math.max(
-
-        startMs,
-
-        endMs - 1
-
-      )
-
-    );
-
-
-  const out = [];
-
-
-  for(
-
-    let t = start;
-
-    t <= last;
-
-    t =
-      addUtcMonths(
-        t,
-        1
-      )
-
-  ){
-
-    const date =
-      new Date(t);
-
-
-    out.push({
-
-      start:
-        t,
-
-      end:
-        addUtcMonths(
-          t,
-          1
-        ),
-
-      year:
-        date.getUTCFullYear(),
-
-      month:
-        String(
-
-          date.getUTCMonth() + 1
-
-        ).padStart(
-
-          2,
-
-          "0"
-
-        )
-
-    });
-
-  }
-
-
-  return out;
-
-}
-
-
-/*
- * ============================================================
- * 日期范围
- * ============================================================
- */
-
-function dayRange(
-
-  startMs,
-
-  endMs
-
-){
-
-  const out = [];
-
-
-  const DAY =
-    86400000;
-
-
-  const date =
-    new Date(
-      startMs
-    );
-
-
-  let t =
-    Date.UTC(
-
-      date.getUTCFullYear(),
-
-      date.getUTCMonth(),
-
-      date.getUTCDate()
-
-    );
-
-
-  while(
-    t < endMs
-  ){
-
-    const x =
-      new Date(t);
-
-
-    out.push({
-
-      start:
-        t,
-
-      end:
-        t + DAY,
-
-      year:
-        x.getUTCFullYear(),
-
-      month:
-        String(
-
-          x.getUTCMonth() + 1
-
-        ).padStart(
-
-          2,
-
-          "0"
-
-        ),
-
-      day:
-        String(
-
-          x.getUTCDate()
-
-        ).padStart(
-
-          2,
-
-          "0"
-
-        )
-
-    });
-
-
-    t += DAY;
-
-  }
-
-
-  return out;
-
-}
-
-
-/*
- * ============================================================
- * Resolve Range
- * ============================================================
- */
-
-function resolveRange(req){
-
-  const oosStart =
-    parseDateParam(
-
-      req.query.backtestStart ??
-      req.query.start,
-
-      DEFAULT_OOS_START
-
-    );
-
-
-  const oosEnd =
-    parseDateParam(
-
-      req.query.backtestEnd ??
-      req.query.end,
-
-      DEFAULT_OOS_END
-
-    );
-
-
-  let warmupStart =
-    parseDateParam(
-
-      req.query.warmupStart,
-
-      DEFAULT_WARMUP_START
-
-    );
-
-
-  if(
-
-    !Number.isFinite(oosStart) ||
-
-    !Number.isFinite(oosEnd) ||
-
-    oosEnd <= oosStart
-
-  ){
-
-    throw new Error(
-
-      "日期范围错误：backtestStart/backtestEnd 无效。"
-
-    );
-
-  }
-
-
-  if(
-    !Number.isFinite(warmupStart)
-  ){
-
-    warmupStart =
-      oosStart -
-      62 *
-      86400000;
-
-  }
-
-
-  if(
-    warmupStart >= oosStart
-  ){
-
-    throw new Error(
-
-      "日期范围错误：warmupStart 必须早于 backtestStart。"
-
-    );
-
-  }
-
-
-  return {
-
-    warmupStart,
-
-    oosStart,
-
-    oosEnd
-
-  };
-
-}
-
-
-/*
- * ============================================================
- * Monthly URL
- * ============================================================
- */
-
-function buildMonthlyUrl(
-
-  symbol,
-
-  interval,
-
-  year,
-
-  month
-
-){
-
-  return (
-
-    `${BINANCE_DATA_BASE}` +
-
-    `/data/futures/um/monthly/klines/` +
-
-    `${symbol}/` +
-
-    `${interval}/` +
-
-    `${symbol}-${interval}-${year}-${month}.zip`
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * Daily URL
- * ============================================================
- */
-
-function buildDailyUrl(
-
-  symbol,
-
-  interval,
-
-  year,
-
-  month,
-
-  day
-
-){
-
-  return (
-
-    `${BINANCE_DATA_BASE}` +
-
-    `/data/futures/um/daily/klines/` +
-
-    `${symbol}/` +
-
-    `${interval}/` +
-
-    `${symbol}-${interval}-${year}-${month}-${day}.zip`
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * 下载队列
- * ============================================================
- */
-
-function processDownloadQueue(){
-
-  while(
-
-    activeDownloads <
-      DOWNLOAD_CONCURRENCY &&
-
-    downloadQueue.length
-
-  ){
-
-    const job =
-      downloadQueue.shift();
-
-
-    activeDownloads++;
-
-
-    Promise.resolve()
-
-      .then(
-        job.task
-      )
-
-      .then(
-        job.resolve
-      )
-
-      .catch(
-        job.reject
-      )
-
-      .finally(
-
-        () => {
-
-          activeDownloads--;
-
-          processDownloadQueue();
-
-        }
-
-      );
-
-  }
-
-}
-
-
-/*
- * ============================================================
- * 加入下载队列
- * ============================================================
- */
-
-function enqueueDownload(
-  task
-){
-
-  return new Promise(
-
-    (resolve, reject) => {
-
-      downloadStats.queueAdded++;
-
-
-      downloadQueue.push({
-
-        task,
-
-        resolve,
-
-        reject
-
-      });
-
-
-      processDownloadQueue();
-
-    }
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * Sleep
- * ============================================================
- */
-
-function sleep(
-  ms
-){
-
-  return new Promise(
-
-    resolve =>
-
-      setTimeout(
-
-        resolve,
-
-        ms
-
-      )
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * CSV Parser
- * ============================================================
- */
-
-function parseCsv(text){
-
-  if(
-
-    typeof text !== "string" ||
-
-    !text.trim()
-
-  ){
-
-    return [];
-
-  }
-
-
-  const result = [];
-
-
-  for(
-
-    const line
-    of text.trim().split(/\r?\n/)
-
-  ){
-
-    if(
-      !line.trim()
-    ){
-
-      continue;
-
-    }
-
-
-    const row =
-      line.split(",");
-
-
-    let openTime =
-      Number(
-        row[0]
-      );
-
-
-    if(
-      !Number.isFinite(openTime)
-    ){
-
-      continue;
-
-    }
-
-
-    if(
-      openTime > 1e15
-    ){
-
-      openTime =
-        Math.floor(
-          openTime / 1000
-        );
-
-    }
-
-
-    const open =
-      Number(
-        row[1]
-      );
-
-
-    const high =
-      Number(
-        row[2]
-      );
-
-
-    const low =
-      Number(
-        row[3]
-      );
-
-
-    const close =
-      Number(
-        row[4]
-      );
-
-
-    const volume =
-      Number(
-        row[5]
-      );
-
-
-    let closeTime =
-      Number(
-        row[6]
-      );
-
-
-    if(
-      closeTime > 1e15
-    ){
-
-      closeTime =
-        Math.floor(
-          closeTime / 1000
-        );
-
-    }
-
-
-    if(
-
-      ![
-
-        open,
-
-        high,
-
-        low,
-
-        close,
-
-        volume,
-
-        closeTime
-
-      ].every(
-        Number.isFinite
-      )
-
-    ){
-
-      continue;
-
-    }
-
-
-    if(
-
-      open <= 0 ||
-
-      high <= 0 ||
-
-      low <= 0 ||
-
-      close <= 0 ||
-
-      high < low
-
-    ){
-
-      continue;
-
-    }
-
-
-    if(
-
-      open < low ||
-
-      open > high ||
-
-      close < low ||
-
-      close > high
-
-    ){
-
-      continue;
-
-    }
-
-
-    result.push({
-
-      openTime,
-
-      open,
-
-      high,
-
-      low,
-
-      close,
-
-      volume,
-
-      closeTime
-
-    });
-
-  }
-
-
-  return result;
-
-}
-
-
-/*
- * ============================================================
- * ZIP 解压
- * ============================================================
- */
-
-function extractZipCsv(
-  buffer
-){
-
-  if(
-
-    !Buffer.isBuffer(buffer) ||
-
-    !buffer.length
-
-  ){
-
-    throw new Error(
-      "ZIP 数据为空或无效"
-    );
-
-  }
-
-
-  const zip =
-    new AdmZip(
-      buffer
-    );
-
-
-  const entry =
-    zip
-      .getEntries()
-      .find(
-
-        e =>
-
-          !e.isDirectory &&
-
-          e.entryName
-            .toLowerCase()
-            .endsWith(".csv")
-
-      );
-
-
-  if(
-    !entry
-  ){
-
-    throw new Error(
-      "ZIP 中没有 CSV 文件"
-    );
-
-  }
-
-
-  return parseCsv(
-
-    entry
-      .getData()
-      .toString("utf8")
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * ZIP 下载
- * ============================================================
- */
-
-function downloadZip(
-
-  url,
-
-  description
-
-){
-
-  downloadStats.totalRequested++;
-
-
-  const cached =
-    zipCache.get(
-      url
-    );
-
-
-  if(
-    cached
-  ){
-
-    if(
-      typeof cached.then ===
-      "function"
-    ){
-
-      downloadStats.promiseHits++;
-
-
-      return cached;
-
-    }
-
-
-    downloadStats.cacheHits++;
-
-
-    return Promise.resolve(
-      cached
-    );
-
-  }
-
-
-  const promise =
-    enqueueDownload(
-
-      async() => {
-
-        let lastError =
-          null;
-
-
-        for(
-
-          let attempt = 0;
-
-          attempt <= MAX_RETRIES;
-
-          attempt++
-
-        ){
-
-          let timeoutId =
-            null;
-
-
-          try{
-
-            const controller =
-              new AbortController();
-
-
-            timeoutId =
-              setTimeout(
-
-                () =>
-
-                  controller.abort(),
-
-                DOWNLOAD_TIMEOUT
-
-              );
-
-
-            const response =
-              await fetch(
-
-                url,
-
-                {
-
-                  signal:
-                    controller.signal,
-
-                  headers:{
-
-                    "User-Agent":
-                      "Quant-V3.7.6"
-
-                  }
-
-                }
-
-              );
-
-
-            clearTimeout(
-              timeoutId
-            );
-
-
-            timeoutId =
-              null;
-
-
-            if(
-              response.status === 404
-            ){
-
-              downloadStats.notFound++;
-
-
-              return [];
-
-            }
-
-
-            if(
-
-              response.status === 429 ||
-
-              response.status >= 500 ||
-
-              !response.ok
-
-            ){
-
-              throw new Error(
-
-                `HTTP ${response.status}`
-
-              );
-
-            }
-
-
-            const buffer =
-              Buffer.from(
-
-                await response
-                  .arrayBuffer()
-
-              );
-
-
-            const rows =
-              extractZipCsv(
-                buffer
-              );
-
-
-            downloadStats.completed++;
-
-
-            console.log(
-
-              `[DOWNLOAD OK] ${description} candles=${rows.length}`
-
-            );
-
-
-            return rows;
-
-          }catch(error){
-
-            if(
-              timeoutId
-            ){
-
-              clearTimeout(
-                timeoutId
-              );
-
-            }
-
-
-            lastError =
-              error;
-
-
-            if(
-              attempt >= MAX_RETRIES
-            ){
-
-              break;
-
-            }
-
-
-            downloadStats.retried++;
-
-
-            await sleep(
-
-              RETRY_BASE_DELAY *
-
-              Math.pow(
-                2,
-                attempt
-              )
-
-            );
-
-          }
-
-        }
-
-
-        downloadStats.failed++;
-
-
-        throw new Error(
-
-          `${description} 下载失败：` +
-
-          `${lastError?.message || "未知错误"}`
-
-        );
-
-      }
-
-    );
-
-
-  zipCache.set(
+  return requestJson(
 
     url,
 
-    promise
+    {
 
-  );
+      method:
+        'GET',
 
+      headers:{
 
-  promise
+        'User-Agent':
+          'Quant-V3.7.18.10/1.0'
 
-    .then(
+      },
 
-      rows => {
-
-        zipCache.set(
-
-          url,
-
-          rows
-
-        );
-
-      }
-
-    )
-
-    .catch(
-
-      () => {
-
-        zipCache.delete(
-          url
-        );
-
-      }
-
-    );
-
-
-  return promise;
-
-}
-
-
-/*
- * ============================================================
- * Monthly
- * ============================================================
- */
-
-function downloadMonthly(
-
-  symbol,
-
-  interval,
-
-  year,
-
-  month
-
-){
-
-  return downloadZip(
-
-    buildMonthlyUrl(
-
-      symbol,
-
-      interval,
-
-      year,
-
-      month
-
-    ),
-
-    `${symbol} ${interval} ${year}-${month} Monthly`
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * Daily
- * ============================================================
- */
-
-function downloadDaily(
-
-  symbol,
-
-  interval,
-
-  year,
-
-  month,
-
-  day
-
-){
-
-  return downloadZip(
-
-    buildDailyUrl(
-
-      symbol,
-
-      interval,
-
-      year,
-
-      month,
-
-      day
-
-    ),
-
-    `${symbol} ${interval} ${year}-${month}-${day} Daily`
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * K线去重
- * ============================================================
- */
-
-function deduplicateKlines(
-  data
-){
-
-  const map =
-    new Map();
-
-
-  for(
-    const row
-    of data
-  ){
-
-    if(
-      !map.has(
-        row.openTime
-      )
-    ){
-
-      map.set(
-
-        row.openTime,
-
-        row
-
-      );
+      timeout:
+        30000
 
     }
-
-  }
-
-
-  return Array.from(
-    map.values()
-  )
-  .sort(
-
-    (a,b) =>
-
-      a.openTime -
-      b.openTime
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * 判断月份是否完成
- * ============================================================
- */
-
-function isCompletedMonth(
-  month
-){
-
-  return (
-
-    month.end <=
-
-    floorUtcMonth(
-      Date.now()
-    )
-
-  );
-
-}
-
-
-/*
- * ============================================================
- * Progress
- * ============================================================
- */
-
-function createProgress(
-
-  symbol,
-
-  interval
-
-){
-
-  const key =
-    `${symbol}:${interval}`;
-
-
-  const p = {
-
-    key,
-
-    symbol,
-
-    interval,
-
-    status:
-      "starting",
-
-    startedAt:
-      nowIso(),
-
-    finishedAt:
-      null,
-
-    monthlyTotal:
-      0,
-
-    monthlyDone:
-      0,
-
-    dailyTotal:
-      0,
-
-    dailyDone:
-      0,
-
-    candles:
-      0,
-
-    error:
-      null
-
-  };
-
-
-  progressState.set(
-    key,
-    p
-  );
-
-
-  return p;
-
-}
-
-
-function getProgress(
-
-  symbol,
-
-  interval
-
-){
-
-  return (
-
-    progressState.get(
-
-      `${symbol}:${interval}`
-
-    ) || null
 
   );
 
@@ -1620,503 +2201,2733 @@ function getProgress(
  * ============================================================
  */
 
-async function fetchHistoricalKlines(
+async function getHistoricalKlines(
 
   symbol,
 
   interval,
 
-  range
+  startTime,
+
+  endTime
 
 ){
 
-  const {
-
-    warmupStart,
-
-    oosStart,
-
-    oosEnd
-
-  } =
-    range;
-
-
-  const cacheKey =
-
-    `${SERVER_VERSION}:` +
-
-    `${symbol}:` +
-
-    `${interval}:` +
-
-    `${warmupStart}:` +
-
-    `${oosStart}:` +
-
-    `${oosEnd}`;
-
-
-  const cached =
-    historicalCache.get(
-      cacheKey
-    );
+  const step =
+    INTERVAL_MS[
+      interval
+    ];
 
 
   if(
-    cached
+    !step
   ){
 
-    return cached;
+    throw new Error(
 
-  }
-
-
-  const progress =
-    createProgress(
-
-      symbol,
-
+      'Unsupported interval: ' +
       interval
 
     );
 
-
-  const promise =
-    (async() => {
-
-      try{
-
-        progress.status =
-          "loading";
+  }
 
 
-        const months =
-          monthRange(
+  let start =
+    parseTime(
 
-            warmupStart,
+      startTime,
 
-            oosEnd
+      Date.now() -
+      30 *
+      24 *
+      60 *
+      60 *
+      1000
 
-          );
-
-
-        let all = [];
-
-
-        /*
-         * 统计任务
-         */
-
-        for(
-          const month
-          of months
-        ){
-
-          const monthStart =
-            Math.max(
-
-              warmupStart,
-
-              month.start
-
-            );
+    );
 
 
-          const monthEnd =
-            Math.min(
+  const end =
+    parseTime(
 
-              oosEnd,
+      endTime,
 
-              month.end
+      Date.now()
 
-            );
-
-
-          if(
-            monthStart >= monthEnd
-          ){
-
-            continue;
-
-          }
+    );
 
 
-          if(
+  if(
 
-            isCompletedMonth(
-              month
-            ) &&
+    !Number.isFinite(start) ||
 
-            monthStart ===
-              month.start &&
+    !Number.isFinite(end) ||
 
-            monthEnd ===
-              month.end
+    end < start
 
-          ){
+  ){
 
-            progress.monthlyTotal++;
+    throw new Error(
+      'Invalid start/end'
+    );
 
-          }else{
+  }
 
-            progress.dailyTotal +=
 
-              dayRange(
+  const out =
+    [];
 
-                monthStart,
 
-                monthEnd
+  const seen =
+    new Set();
 
-              ).length;
 
-          }
+  for(
+
+    let page = 0;
+
+    page < 200;
+
+    page++
+
+  ){
+
+    const rows =
+      await publicApi(
+
+        '/fapi/v1/klines',
+
+        {
+
+          symbol,
+
+          interval,
+
+          startTime:
+            Math.floor(
+              start
+            ),
+
+          endTime:
+            Math.floor(
+              end
+            ),
+
+          limit:
+            1500
 
         }
 
-
-        /*
-         * 下载
-         */
-
-        for(
-          const month
-          of months
-        ){
-
-          const monthStart =
-            Math.max(
-
-              warmupStart,
-
-              month.start
-
-            );
-
-
-          const monthEnd =
-            Math.min(
-
-              oosEnd,
-
-              month.end
-
-            );
-
-
-          if(
-            monthStart >= monthEnd
-          ){
-
-            continue;
-
-          }
-
-
-          if(
-
-            isCompletedMonth(
-              month
-            ) &&
-
-            monthStart ===
-              month.start &&
-
-            monthEnd ===
-              month.end
-
-          ){
-
-            const rows =
-              await downloadMonthly(
-
-                symbol,
-
-                interval,
-
-                month.year,
-
-                month.month
-
-              );
-
-
-            progress.monthlyDone++;
-
-
-            all.push(
-              ...rows
-            );
-
-          }else{
-
-            const jobs =
-
-              dayRange(
-
-                monthStart,
-
-                monthEnd
-
-              ).map(
-
-                day =>
-
-                  downloadDaily(
-
-                    symbol,
-
-                    interval,
-
-                    day.year,
-
-                    day.month,
-
-                    day.day
-
-                  )
-
-                  .then(
-
-                    rows => {
-
-                      progress.dailyDone++;
-
-
-                      return rows;
-
-                    }
-
-                  )
-
-              );
-
-
-            const daily =
-              await Promise.all(
-                jobs
-              );
-
-
-            for(
-              const rows
-              of daily
-            ){
-
-              all.push(
-                ...rows
-              );
-
-            }
-
-          }
-
-        }
-
-
-        const unique =
-          deduplicateKlines(
-            all
-          );
-
-
-        const result =
-          unique.filter(
-
-            row =>
-
-              row.openTime >=
-                warmupStart &&
-
-              row.openTime <
-                oosEnd
-
-          );
-
-
-        if(
-          !result.length
-        ){
-
-          throw new Error(
-
-            `${symbol} ${interval}：指定时间范围没有历史K线`
-
-          );
-
-        }
-
-
-        const oosRows =
-          result.filter(
-
-            row =>
-
-              row.openTime >=
-                oosStart &&
-
-              row.openTime <
-                oosEnd
-
-          );
-
-
-        if(
-          !oosRows.length
-        ){
-
-          throw new Error(
-
-            `${symbol} ${interval}：OOS 区间没有数据`
-
-          );
-
-        }
-
-
-        progress.candles =
-          result.length;
-
-
-        progress.status =
-          "ready";
-
-
-        progress.finishedAt =
-          nowIso();
-
-
-        return result;
-
-      }catch(error){
-
-        progress.status =
-          "error";
-
-
-        progress.error =
-          error.message;
-
-
-        progress.finishedAt =
-          nowIso();
-
-
-        throw error;
-
-      }
-
-    })();
-
-
-  historicalCache.set(
-
-    cacheKey,
-
-    promise
-
-  );
-
-
-  promise.catch(
-
-    () => {
-
-      historicalCache.delete(
-        cacheKey
       );
+
+
+    if(
+
+      !Array.isArray(rows) ||
+
+      !rows.length
+
+    ){
+
+      break;
 
     }
 
+
+    for(
+      const k of rows
+    ){
+
+      const c =
+        candleFromK(
+          k
+        );
+
+
+      if(
+
+        c.openTime <
+          start ||
+
+        c.openTime >
+          end
+
+      ){
+
+        continue;
+
+      }
+
+
+      if(
+        !seen.has(
+          c.openTime
+        )
+      ){
+
+        seen.add(
+          c.openTime
+        );
+
+
+        out.push(
+          c
+        );
+
+      }
+
+    }
+
+
+    const lastOpen =
+      Number(
+        rows[
+          rows.length - 1
+        ]?.[0]
+      );
+
+
+    if(
+
+      !Number.isFinite(
+        lastOpen
+      ) ||
+
+      lastOpen >= end ||
+
+      rows.length < 1500
+
+    ){
+
+      break;
+
+    }
+
+
+    const next =
+      lastOpen +
+      step;
+
+
+    if(
+      next <= start
+    ){
+
+      break;
+
+    }
+
+
+    start =
+      next;
+
+  }
+
+
+  out.sort(
+
+    (a,b) =>
+      a.openTime -
+      b.openTime
+
   );
 
 
-  return promise;
+  return out;
 
 }
 
 
 /*
  * ============================================================
- * Meta
+ * Funding Normalization
  * ============================================================
  */
 
-function getMeta(
-  range
+function normalizeFundingRows(
+
+  rows
+
 ){
+
+  const out =
+    [];
+
+
+  for(
+    const x of
+      (
+        Array.isArray(rows)
+          ? rows
+          : []
+      )
+  ){
+
+    const obj =
+
+      Array.isArray(x)
+
+        ? {
+
+            calcTime:
+              x[0],
+
+            fundingIntervalHours:
+              x[1],
+
+            fundingRate:
+              x[2]
+
+          }
+
+        : x || {};
+
+
+    let t =
+
+      Number(
+
+        obj.calcTime ??
+
+        obj.fundingTime ??
+
+        obj.funding_time ??
+
+        obj.time
+
+      );
+
+
+    if(
+
+      Number.isFinite(t) &&
+
+      t < 1e12
+
+    ){
+
+      t *= 1000;
+
+    }
+
+
+    const rate =
+
+      Number(
+
+        obj.lastFundingRate ??
+
+        obj.fundingRate ??
+
+        obj.funding_rate ??
+
+        obj.rate
+
+      );
+
+
+    const interval =
+
+      Number(
+
+        obj.fundingIntervalHours ??
+
+        obj.funding_interval_hours ??
+
+        8
+
+      );
+
+
+    if(
+
+      Number.isFinite(t) &&
+
+      Number.isFinite(rate)
+
+    ){
+
+      out.push({
+
+        symbol:
+          obj.symbol,
+
+        fundingTime:
+          t,
+
+        fundingRate:
+          rate,
+
+        fundingIntervalHours:
+
+          Number.isFinite(interval) &&
+          interval > 0
+
+            ? interval
+
+            : 8,
+
+        markPrice:
+
+          Number(
+
+            obj.markPrice ??
+            obj.mark_price ??
+            NaN
+
+          )
+
+      });
+
+    }
+
+  }
+
+
+  return out;
+
+}
+
+
+/*
+ * ============================================================
+ * Funding Archive Cache
+ * ============================================================
+ */
+
+const fundingArchiveCache =
+  new Map();
+
+
+/*
+ * ============================================================
+ * Binance Public Data Funding Archive
+ *
+ * USD-M Futures
+ *
+ * ============================================================
+ */
+
+const FUNDING_ARCHIVE_BASE =
+
+  'https://data.binance.vision/data/futures/um/monthly/fundingRate';
+
+
+/*
+ * ============================================================
+ * Month Floor
+ * ============================================================
+ */
+
+function monthFloor(
+  ms
+){
+
+  const d =
+    new Date(
+      ms
+    );
+
+
+  return Date.UTC(
+
+    d.getUTCFullYear(),
+
+    d.getUTCMonth(),
+
+    1
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Next Month
+ * ============================================================
+ */
+
+function nextMonth(
+  ms
+){
+
+  const d =
+    new Date(
+      ms
+    );
+
+
+  return Date.UTC(
+
+    d.getUTCFullYear(),
+
+    d.getUTCMonth() + 1,
+
+    1
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Funding Archive URL
+ * ============================================================
+ */
+
+function fundingArchiveUrl(
+
+  symbol,
+
+  monthStart
+
+){
+
+  const d =
+    new Date(
+      monthStart
+    );
+
+
+  const ym =
+
+    `${d.getUTCFullYear()}-` +
+
+    `${String(
+      d.getUTCMonth() + 1
+    ).padStart(
+      2,
+      '0'
+    )}`;
+
+
+  return (
+
+    `${FUNDING_ARCHIVE_BASE}/` +
+
+    `${symbol}/` +
+
+    `${symbol}-fundingRate-${ym}.zip`
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Download Funding Archive
+ * ============================================================
+ */
+
+async function downloadArchive(
+  url
+){
+
+  const r =
+    await requestBuffer(
+
+      url,
+
+      {
+
+        method:
+          'GET',
+
+        headers:{
+
+          'User-Agent':
+            'Quant-V3.7.18.10-FundingArchive/1.0'
+
+        },
+
+        timeout:
+          60000
+
+      }
+
+    );
+
+
+  if(
+    r.status === 404
+  ){
+
+    return null;
+
+  }
+
+
+  if(
+
+    r.status < 200 ||
+
+    r.status >= 300
+
+  ){
+
+    throw new Error(
+
+      `Funding archive HTTP ${r.status}`
+
+    );
+
+  }
+
+
+  if(
+    !r.buffer.length
+  ){
+
+    throw new Error(
+      'Funding archive empty'
+    );
+
+  }
+
+
+  return r.buffer;
+
+}
+
+
+/*
+ * ============================================================
+ * Parse Funding ZIP
+ * ============================================================
+ */
+
+function parseFundingArchiveBuffer(
+
+  buffer,
+
+  symbol
+
+){
+
+  const zip =
+    new AdmZip(
+      buffer
+    );
+
+
+  const entries =
+    zip.getEntries();
+
+
+  const entry =
+    entries.find(
+
+      e =>
+
+        !e.isDirectory &&
+
+        /\.(csv|csv\.gz)$/i.test(
+          e.entryName
+        )
+
+    );
+
+
+  if(
+    !entry
+  ){
+
+    throw new Error(
+      'Funding ZIP 中没有 CSV 文件'
+    );
+
+  }
+
+
+  const text =
+    entry
+      .getData()
+      .toString(
+        'utf8'
+      );
+
+
+  const lines =
+
+    text
+      .replace(
+        /^\uFEFF/,
+        ''
+      )
+      .trim()
+      .split(
+        /\r?\n/
+      );
+
+
+  const rows =
+    [];
+
+
+  for(
+    const line of lines
+  ){
+
+    if(
+      !line.trim()
+    ){
+
+      continue;
+
+    }
+
+
+    const cols =
+      line
+        .split(',')
+        .map(
+          x =>
+            x.trim()
+        );
+
+
+    if(
+      !Number.isFinite(
+        Number(
+          cols[0]
+        )
+      )
+    ){
+
+      continue;
+
+    }
+
+
+    const obj = {
+
+      symbol:
+        cols[1] ||
+        symbol,
+
+      calcTime:
+        cols[0],
+
+      fundingIntervalHours:
+        cols[2],
+
+      lastFundingRate:
+        cols[3]
+
+    };
+
+
+    const n =
+      normalizeFundingRows(
+        [obj]
+      );
+
+
+    if(
+      n.length
+    ){
+
+      rows.push(
+        n[0]
+      );
+
+    }
+
+  }
+
+
+  return rows;
+
+}
+
+
+/*
+ * ============================================================
+ * Historical Funding
+ * ============================================================
+ */
+
+async function getHistoricalFunding(
+
+  symbol,
+
+  startTime,
+
+  endTime
+
+){
+
+  let start =
+    parseTime(
+
+      startTime,
+
+      Date.now() -
+      30 *
+      24 *
+      60 *
+      60 *
+      1000
+
+    );
+
+
+  const end =
+    parseTime(
+
+      endTime,
+
+      Date.now()
+
+    );
+
+
+  if(
+
+    !Number.isFinite(start) ||
+
+    !Number.isFinite(end) ||
+
+    end < start
+
+  ){
+
+    throw new Error(
+      'Invalid funding start/end'
+    );
+
+  }
+
+
+  const first =
+    monthFloor(
+      start
+    );
+
+
+  const last =
+    monthFloor(
+      end
+    );
+
+
+  const all =
+    [];
+
+
+  for(
+
+    let m = first;
+
+    m <= last;
+
+    m = nextMonth(m)
+
+  ){
+
+    const url =
+      fundingArchiveUrl(
+
+        symbol,
+
+        m
+
+      );
+
+
+    let rows =
+      fundingArchiveCache.get(
+        url
+      );
+
+
+    if(
+      !rows
+    ){
+
+      const buf =
+        await downloadArchive(
+          url
+        );
+
+
+      rows =
+
+        buf
+
+          ? parseFundingArchiveBuffer(
+              buf,
+              symbol
+            )
+
+          : [];
+
+
+      fundingArchiveCache.set(
+
+        url,
+
+        rows
+
+      );
+
+    }
+
+
+    for(
+      const x of rows
+    ){
+
+      if(
+
+        x.fundingTime >=
+          start &&
+
+        x.fundingTime <=
+          end
+
+      ){
+
+        all.push(
+          x
+        );
+
+      }
+
+    }
+
+  }
+
+
+  const map =
+    new Map();
+
+
+  for(
+    const x of all
+  ){
+
+    map.set(
+
+      x.fundingTime,
+
+      x
+
+    );
+
+  }
+
+
+  return [
+
+    ...map.values()
+
+  ].sort(
+
+    (a,b) =>
+      a.fundingTime -
+      b.fundingTime
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Funding API
+ *
+ * /api/funding
+ * /api/funding-rate
+ * /api/market/funding
+ *
+ * ============================================================
+ */
+
+async function handleFunding(
+
+  req,
+
+  res,
+
+  u
+
+){
+
+  const symbol =
+
+    (
+
+      u.searchParams.get(
+        'symbol'
+      ) ||
+
+      ''
+
+    )
+      .trim()
+      .toUpperCase();
+
+
+  if(
+
+    !/^[A-Z0-9]{5,20}$/.test(
+      symbol
+    )
+
+  ){
+
+    return json(
+
+      res,
+
+      400,
+
+      {
+
+        ok:false,
+
+        error:
+          'symbol required/invalid'
+
+      }
+
+    );
+
+  }
+
+
+  const start =
+    u.searchParams.get(
+      'startTime'
+    ) ||
+
+    u.searchParams.get(
+      'start'
+    );
+
+
+  const end =
+    u.searchParams.get(
+      'endTime'
+    ) ||
+
+    u.searchParams.get(
+      'end'
+    );
+
+
+  const rows =
+    await getHistoricalFunding(
+
+      symbol,
+
+      start,
+
+      end
+
+    );
+
+
+  const rangeStart =
+    parseTime(
+
+      start,
+
+      Date.now() -
+      30 *
+      24 *
+      60 *
+      60 *
+      1000
+
+    );
+
+
+  const rangeEnd =
+    parseTime(
+
+      end,
+
+      Date.now()
+
+    );
+
+
+  /*
+   * 理论上每 8 小时一次。
+   *
+   * 这里只作为近似诊断，
+   * 不把 expected 当作强制数据标准。
+   */
+
+  const expected =
+
+    Math.max(
+
+      0,
+
+      Math.floor(
+
+        (
+          rangeEnd -
+          rangeStart
+        ) /
+
+        (
+          8 *
+          60 *
+          60 *
+          1000
+        )
+
+      )
+
+    );
+
+
+  const gaps =
+    [];
+
+
+  for(
+
+    let i = 1;
+
+    i < rows.length;
+
+    i++
+
+  ){
+
+    const dt =
+
+      rows[i].fundingTime -
+
+      rows[
+        i - 1
+      ].fundingTime;
+
+
+    if(
+
+      dt >
+      12 *
+      60 *
+      60 *
+      1000
+
+    ){
+
+      gaps.push({
+
+        from:
+          rows[
+            i - 1
+          ].fundingTime,
+
+        to:
+          rows[i].fundingTime,
+
+        deltaMs:
+          dt
+
+      });
+
+    }
+
+  }
+
+
+  return json(
+
+    res,
+
+    200,
+
+    {
+
+      ok:true,
+
+      source:
+        'Binance Public Data fundingRate archive',
+
+      symbol,
+
+      start:
+        rangeStart,
+
+      end:
+        rangeEnd,
+
+      data:
+        rows,
+
+      rows,
+
+      diagnostics:{
+
+        available:
+          rows.length > 0,
+
+        events:
+          rows.length,
+
+        expectedApprox:
+          expected,
+
+        coverageRatio:
+
+          expected > 0
+
+            ? rows.length /
+              expected
+
+            : null,
+
+        gaps:
+          gaps.slice(
+            0,
+            20
+          ),
+
+        archiveBase:
+          FUNDING_ARCHIVE_BASE
+
+      }
+
+    }
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Market API
+ * ============================================================
+ */
+
+async function handleMarket(
+
+  req,
+
+  res,
+
+  u
+
+){
+
+  const symbol =
+
+    (
+
+      u.searchParams.get(
+        'symbol'
+      ) ||
+
+      ''
+
+    )
+      .trim()
+      .toUpperCase();
+
+
+  if(
+    !symbol
+  ){
+
+    return json(
+
+      res,
+
+      400,
+
+      {
+
+        ok:false,
+
+        error:
+          'symbol required'
+
+      }
+
+    );
+
+  }
+
+
+  const now =
+    Date.now();
+
+
+  const start =
+    parseTime(
+
+      u.searchParams.get(
+        'start'
+      ),
+
+      now -
+      30 *
+      24 *
+      60 *
+      60 *
+      1000
+
+    );
+
+
+  const end =
+    parseTime(
+
+      u.searchParams.get(
+        'end'
+      ),
+
+      now
+
+    );
+
+
+  const data =
+    {};
+
+
+  for(
+
+    const interval of [
+
+      '15m',
+
+      '1h',
+
+      '4h'
+
+    ]
+
+  ){
+
+    data[interval] =
+
+      await getHistoricalKlines(
+
+        symbol,
+
+        interval,
+
+        start,
+
+        end
+
+      );
+
+  }
+
+
+  return json(
+
+    res,
+
+    200,
+
+    {
+
+      ok:true,
+
+      data,
+
+      meta:{
+
+        symbol,
+
+        start,
+
+        end,
+
+        backtestStart:
+
+          parseTime(
+
+            u.searchParams.get(
+              'backtestStart'
+            ),
+
+            start
+
+          ),
+
+        backtestEnd:
+
+          parseTime(
+
+            u.searchParams.get(
+              'backtestEnd'
+            ),
+
+            end
+
+          ),
+
+        publicBase:
+          PUBLIC_BASE
+
+      }
+
+    }
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Quantity / Price
+ * ============================================================
+ */
+
+function roundStep(
+
+  v,
+
+  step
+
+){
+
+  if(
+
+    !step ||
+
+    !Number.isFinite(v)
+
+  ){
+
+    return v;
+
+  }
+
+
+  const n =
+
+    Math.floor(
+
+      v /
+      step +
+      1e-12
+
+    );
+
+
+  return Number(
+
+    (
+      n *
+      step
+    ).toFixed(
+      12
+    )
+
+  );
+
+}
+
+
+function roundPrice(
+
+  v,
+
+  tick
+
+){
+
+  if(
+    !tick
+  ){
+
+    return v;
+
+  }
+
+
+  const n =
+    Math.round(
+      v /
+      tick
+    );
+
+
+  return Number(
+
+    (
+      n *
+      tick
+    ).toFixed(
+      12
+    )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Exchange Info
+ * ============================================================
+ */
+
+async function loadExchangeInfo(){
+
+  state.exchangeInfo =
+
+    await api(
+
+      'GET',
+
+      '/fapi/v1/exchangeInfo'
+
+    );
+
+
+  for(
+
+    const s of
+      state.exchangeInfo.symbols || []
+
+  ){
+
+    const f =
+      {};
+
+
+    for(
+      const x of
+        s.filters || []
+    ){
+
+      if(
+        x.filterType ===
+        'LOT_SIZE'
+      ){
+
+        f.step =
+          Number(
+            x.stepSize
+          );
+
+        f.minQty =
+          Number(
+            x.minQty
+          );
+
+      }
+
+
+      if(
+        x.filterType ===
+        'PRICE_FILTER'
+      ){
+
+        f.tick =
+          Number(
+            x.tickSize
+          );
+
+      }
+
+
+      if(
+        x.filterType ===
+        'MIN_NOTIONAL'
+      ){
+
+        f.minNotional =
+          Number(
+
+            x.notional ||
+
+            x.minNotional ||
+
+            0
+
+          );
+
+      }
+
+    }
+
+
+    state.filters[
+      s.symbol
+    ] =
+      f;
+
+  }
+
+
+  return state.exchangeInfo;
+
+}
+
+
+/*
+ * ============================================================
+ * Sync Account
+ * ============================================================
+ */
+
+async function syncAccount(){
+
+  state.account =
+
+    await api(
+
+      'GET',
+
+      '/fapi/v2/account',
+
+      {},
+
+      true
+
+    );
+
+
+  state.positions =
+
+    (
+      state.account.positions ||
+      []
+    )
+
+      .filter(
+
+        p =>
+
+          Math.abs(
+
+            Number(
+              p.positionAmt ||
+              0
+            )
+
+          ) > 0
+
+      )
+
+      .map(
+
+        p => ({
+
+          symbol:
+            p.symbol,
+
+          amt:
+            Number(
+              p.positionAmt
+            ),
+
+          entry:
+            Number(
+              p.entryPrice
+            ),
+
+          unrealized:
+            Number(
+              p.unrealizedProfit
+            ),
+
+          notional:
+
+            Math.abs(
+              Number(
+                p.positionAmt
+              )
+            ) *
+
+            Number(
+
+              p.markPrice ||
+
+              p.entryPrice
+
+            ),
+
+          leverage:
+            Number(
+              p.leverage ||
+              1
+            )
+
+        })
+
+      );
+
+
+  return state.account;
+
+}
+
+
+/*
+ * ============================================================
+ * Current Equity
+ * ============================================================
+ */
+
+function currentEquity(){
+
+  return (
+
+    Number(
+
+      state.account?.totalWalletBalance ||
+
+      state.account?.totalMarginBalance ||
+
+      0
+
+    ) ||
+
+    10000
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Capacity
+ *
+ * 最大 3 仓
+ * ============================================================
+ */
+
+function canOpen(
+
+  symbol,
+
+  plannedNotional = 0
+
+){
+
+  if(
+
+    state.positions.some(
+
+      p =>
+        p.symbol ===
+        symbol
+
+    )
+
+  ){
+
+    return false;
+
+  }
+
+
+  if(
+
+    state.positions.length >=
+    MAX_POSITIONS
+
+  ){
+
+    return false;
+
+  }
+
+
+  const eq =
+    currentEquity();
+
+
+  const cap =
+
+    eq *
+
+    MAX_ENTRY_LEVERAGE *
+
+    LEVERAGE_BUFFER;
+
+
+  const used =
+
+    state.positions.reduce(
+
+      (
+
+        a,
+
+        p
+
+      ) =>
+
+        a +
+        Math.abs(
+          p.notional || 0
+        ),
+
+      0
+
+    );
+
+
+  return (
+
+    used +
+
+    Math.max(
+      0,
+      plannedNotional
+    )
+
+  )
+
+  <=
+
+  cap + 1e-9;
+
+}
+
+
+/*
+ * ============================================================
+ * Place Entry
+ * ============================================================
+ */
+
+async function placeEntry(
+
+  symbol,
+
+  side,
+
+  qty,
+
+  stopPrice
+
+){
+
+  if(
+    !AUTO_TRADE
+  ){
+
+    log(
+
+      'SIGNAL_ONLY',
+
+      {
+
+        symbol,
+
+        side,
+
+        qty,
+
+        stopPrice
+
+      }
+
+    );
+
+
+    return {
+      dryRun:true
+    };
+
+  }
+
+
+  const f =
+    state.filters[
+      symbol
+    ] ||
+    {};
+
+
+  qty =
+    roundStep(
+      qty,
+      f.step
+    );
+
+
+  if(
+
+    qty <= 0 ||
+
+    qty <
+    (
+      f.minQty ||
+      0
+    )
+
+  ){
+
+    throw new Error(
+
+      symbol +
+      ' quantity below minQty'
+
+    );
+
+  }
+
+
+  const order =
+    await postForm(
+
+      '/fapi/v1/order',
+
+      {
+
+        symbol,
+
+        side,
+
+        type:
+          'MARKET',
+
+        quantity:
+          qty,
+
+        newOrderRespType:
+          'RESULT'
+
+      }
+
+    );
+
+
+  log(
+
+    'ENTRY_FILLED',
+
+    {
+
+      symbol,
+
+      side,
+
+      qty,
+
+      orderId:
+        order.orderId
+
+    }
+
+  );
+
+
+  const stopSide =
+
+    side === 'BUY'
+
+      ? 'SELL'
+
+      : 'BUY';
+
+
+  stopPrice =
+    roundPrice(
+      stopPrice,
+      f.tick
+    );
+
+
+  try{
+
+    const stop =
+
+      await postForm(
+
+        '/fapi/v1/order',
+
+        {
+
+          symbol,
+
+          side:
+            stopSide,
+
+          type:
+            'STOP_MARKET',
+
+          stopPrice,
+
+          closePosition:
+            'true',
+
+          workingType:
+            'MARK_PRICE'
+
+        }
+
+      );
+
+
+    log(
+
+      'STOP_PLACED',
+
+      {
+
+        symbol,
+
+        stopPrice,
+
+        orderId:
+          stop.orderId
+
+      }
+
+    );
+
+  }catch(e){
+
+    log(
+
+      'STOP_ERROR',
+
+      {
+
+        symbol,
+
+        error:
+          e.message
+
+      }
+
+    );
+
+
+    throw e;
+
+  }
+
+
+  return order;
+
+}
+
+
+/*
+ * ============================================================
+ * Evaluate Symbol
+ * ============================================================
+ */
+
+async function evaluateSymbol(
+  symbol
+){
+
+  const [
+
+    d15,
+
+    d1,
+
+    d4
+
+  ] =
+
+    await Promise.all([
+
+      getKlines(
+        symbol,
+        '15m',
+        220
+      ),
+
+      getKlines(
+        symbol,
+        '1h',
+        220
+      ),
+
+      getKlines(
+        symbol,
+        '4h',
+        220
+      )
+
+    ]);
+
+
+  if(
+
+    d15.length < 80 ||
+
+    d1.length < 80 ||
+
+    d4.length < 80
+
+  ){
+
+    return null;
+
+  }
+
+
+  /*
+   * 最新 K 线可能还没有结束。
+   */
+
+  const now =
+    Date.now();
+
+
+  let i15 =
+    d15.length - 1;
+
+
+  if(
+
+    d15[i15].closeTime >
+    now
+
+  ){
+
+    i15--;
+
+  }
+
+
+  if(
+    i15 < 20
+  ){
+
+    return null;
+
+  }
+
+
+  const t =
+    d15[i15].closeTime;
+
+
+  let i1 =
+    -1;
+
+
+  for(
+
+    let i =
+      d1.length - 1;
+
+    i >= 0;
+
+    i--
+
+  ){
+
+    if(
+
+      d1[i].closeTime <=
+      t
+
+    ){
+
+      i1 =
+        i;
+
+      break;
+
+    }
+
+  }
+
+
+  let i4 =
+    -1;
+
+
+  for(
+
+    let i =
+      d4.length - 1;
+
+    i >= 0;
+
+    i--
+
+  ){
+
+    if(
+
+      d4[i].closeTime <=
+      t
+
+    ){
+
+      i4 =
+        i;
+
+      break;
+
+    }
+
+  }
+
+
+  if(
+
+    i1 <
+    EMA_SLOPE_LOOKBACK ||
+
+    i4 < 1
+
+  ){
+
+    return null;
+
+  }
+
+
+  const e15_20 =
+    ema(
+      d15.map(
+        x => x.close
+      ),
+      20
+    );
+
+
+  const e15_50 =
+    ema(
+      d15.map(
+        x => x.close
+      ),
+      50
+    );
+
+
+  const e1_20 =
+    ema(
+      d1.map(
+        x => x.close
+      ),
+      20
+    );
+
+
+  const e1_50 =
+    ema(
+      d1.map(
+        x => x.close
+      ),
+      50
+    );
+
+
+  const e4_50 =
+    ema(
+      d4.map(
+        x => x.close
+      ),
+      50
+    );
+
+
+  const e4_200 =
+    ema(
+      d4.map(
+        x => x.close
+      ),
+      200
+    );
+
+
+  const a15 =
+    atr(
+      d15,
+      14
+    );
+
+
+  const c =
+    d15[i15];
+
+
+  const prev =
+    d15[i15 - 1];
+
+
+  const a =
+    a15[i15];
+
+
+  if(
+
+    !Number.isFinite(a) ||
+
+    a <= 0
+
+  ){
+
+    return null;
+
+  }
+
+
+  const b4 =
+    e4_50[i4] >
+    e4_200[i4];
+
+
+  const s4 =
+    e4_50[i4] <
+    e4_200[i4];
+
+
+  const b1 =
+    e1_20[i1] >
+    e1_50[i1];
+
+
+  const s1 =
+    e1_20[i1] <
+    e1_50[i1];
+
+
+  const b15 =
+    e15_20[i15] >
+    e15_50[i15];
+
+
+  const s15 =
+    e15_20[i15] <
+    e15_50[i15];
+
+
+  const slopeBull =
+
+    e1_20[i1] >
+
+    e1_20[
+      i1 -
+      EMA_SLOPE_LOOKBACK
+    ];
+
+
+  const slopeBear =
+
+    e1_20[i1] <
+
+    e1_20[
+      i1 -
+      EMA_SLOPE_LOOKBACK
+    ];
+
+
+  const g15 =
+    gap(
+      e15_20[i15],
+      e15_50[i15]
+    );
+
+
+  const g1 =
+    gap(
+      e1_20[i1],
+      e1_50[i1]
+    );
+
+
+  const lp =
+    longPB(
+      d15,
+      e15_20,
+      i15
+    );
+
+
+  const sp =
+    shortPB(
+      d15,
+      e15_20,
+      i15
+    );
+
+
+  const lf =
+
+    lp >= 0 &&
+
+    i15 - lp <=
+    MAX_PULLBACK_AGE;
+
+
+  const sf =
+
+    sp >= 0 &&
+
+    i15 - sp <=
+    MAX_PULLBACK_AGE;
+
+
+  const longReclaim =
+
+    prev.close <=
+      e15_20[
+        i15 - 1
+      ] &&
+
+    c.close >
+      e15_20[
+        i15
+      ];
+
+
+  const shortReclaim =
+
+    prev.close >=
+      e15_20[
+        i15 - 1
+      ] &&
+
+    c.close <
+      e15_20[
+        i15
+      ];
+
+
+  const cl =
+    loc(c);
+
+
+  const ba =
+    body(c) /
+    a;
+
+
+  const longBreak =
+
+    c.close >
+
+    prev.high +
+
+    a *
+    BREAKOUT_ATR_BUFFER &&
+
+    cl >=
+    MIN_LONG_CLOSE_LOCATION &&
+
+    ba >=
+    MIN_BREAKOUT_BODY_ATR;
+
+
+  const shortBreak =
+
+    c.close <
+
+    prev.low -
+
+    a *
+    BREAKOUT_ATR_BUFFER &&
+
+    cl <=
+    MAX_SHORT_CLOSE_LOCATION &&
+
+    ba >=
+    MIN_SHORT_BODY_ATR;
+
+
+  const lq =
+
+    g15 >=
+    MIN_15_EMA_GAP &&
+
+    g1 >=
+    MIN_1H_EMA_GAP &&
+
+    slopeBull &&
+
+    lf &&
+
+    longReclaim &&
+
+    c.close >
+    e15_20[i15];
+
+
+  const sq =
+
+    g15 >=
+    MIN_15_EMA_GAP &&
+
+    g1 >=
+    MIN_1H_EMA_GAP &&
+
+    slopeBear &&
+
+    sf &&
+
+    shortReclaim &&
+
+    c.close <
+    e15_20[i15];
+
+
+  let side =
+    null;
+
+
+  if(
+
+    b4 &&
+    b1 &&
+    b15 &&
+    slopeBull &&
+    lq &&
+    longBreak
+
+  ){
+
+    side =
+      'LONG';
+
+  }else if(
+
+    s4 &&
+    s1 &&
+    s15 &&
+    slopeBear &&
+    sq &&
+    shortBreak
+
+  ){
+
+    side =
+      'SHORT';
+
+  }
+
+
+  if(
+    !side
+  ){
+
+    return {
+
+      symbol,
+
+      closedAt:
+        t,
+
+      signal:
+        null
+
+    };
+
+  }
+
+
+  const q =
+    quality(
+
+      side,
+
+      {
+
+        b4,
+
+        b1,
+
+        b15,
+
+        s4,
+
+        s1,
+
+        s15,
+
+        slopeBull,
+
+        slopeBear,
+
+        g15,
+
+        g1,
+
+        bodyAtr:
+          ba,
+
+        closeLoc:
+          cl,
+
+        fresh:
+          side === 'LONG'
+            ? lf
+            : sf
+
+      }
+
+    );
+
+
+  const threshold =
+
+    side === 'SHORT'
+
+      ? SHORT_MIN_SIGNAL_QUALITY
+
+      : MIN_SIGNAL_QUALITY;
+
+
+  if(
+    q < threshold
+  ){
+
+    return {
+
+      symbol,
+
+      closedAt:
+        t,
+
+      signal:
+        null,
+
+      filtered:
+        true,
+
+      quality:
+        q
+
+    };
+
+  }
+
+
+  let stopDistance =
+
+    ATR_MULTIPLIER *
+    a;
+
+
+  if(
+
+    side === 'LONG' &&
+
+    lp >= 0
+
+  ){
+
+    stopDistance =
+
+      Math.max(
+
+        stopDistance,
+
+        c.close -
+        d15[lp].low
+
+      );
+
+  }
+
+
+  if(
+
+    side === 'SHORT' &&
+
+    sp >= 0
+
+  ){
+
+    stopDistance =
+
+      Math.max(
+
+        stopDistance,
+
+        d15[sp].high -
+        c.close
+
+      );
+
+  }
+
+
+  if(
+
+    stopDistance >
+    a *
+    MAX_STOP_ATR
+
+  ){
+
+    return {
+
+      symbol,
+
+      closedAt:
+        t,
+
+      signal:
+        null,
+
+      filtered:
+        'wideStop',
+
+      quality:
+        q
+
+    };
+
+  }
+
+
+  const stop =
+
+    side === 'LONG'
+
+      ? c.close -
+        stopDistance
+
+      : c.close +
+        stopDistance;
+
 
   return {
 
-    version:
-      SERVER_VERSION,
+    symbol,
 
-    oos:
-      true,
+    closedAt:
+      t,
 
-    source:
-      "Binance USD-M Futures Public Data",
+    signal:{
 
-    dataMode:
-      "Monthly archive + Daily archive",
+      side,
 
-    dataStart:
-      range.warmupStart,
+      quality:
+        q,
 
-    backtestStart:
-      range.oosStart,
+      signalClose:
+        c.close,
 
-    backtestEnd:
-      range.oosEnd,
+      atr:
+        a,
 
-    dataStartISO:
-      new Date(
-        range.warmupStart
-      ).toISOString(),
+      stopDistance,
 
-    backtestStartISO:
-      new Date(
-        range.oosStart
-      ).toISOString(),
+      stop
 
-    backtestEndISO:
-      new Date(
-        range.oosEnd
-      ).toISOString(),
+    },
 
-    intervals:[
-
-      "4h",
-
-      "1h",
-
-      "15m"
-
-    ],
-
-    downloadConcurrency:
-      DOWNLOAD_CONCURRENCY,
-
-    downloadTimeoutMs:
-      DOWNLOAD_TIMEOUT,
-
-    maxRetries:
-      MAX_RETRIES,
-
-    zipCacheSize:
-      zipCache.size,
-
-    historicalCacheSize:
-      historicalCache.size,
-
-    marketRequestCacheSize:
-      marketRequestCache.size,
-
-    fundingCacheSize:
-      fundingCache.size,
-
-    fundingRequestCacheSize:
-      fundingRequestCache.size
+    nextOpen:
+      t + 1
 
   };
 
@@ -2125,1623 +4936,1423 @@ function getMeta(
 
 /*
  * ============================================================
- * Market Request
+ * Run Cycle
  * ============================================================
  */
 
-async function executeMarketRequest(
+async function runCycle(){
 
-  symbol,
+  try{
 
-  range
-
-){
-
-  const requestKey =
-
-    `${SERVER_VERSION}:` +
-
-    `${symbol}:` +
-
-    `${range.warmupStart}:` +
-
-    `${range.oosStart}:` +
-
-    `${range.oosEnd}`;
+    await syncAccount();
 
 
-  const existing =
-    marketRequestCache.get(
-      requestKey
-    );
+    for(
+      const symbol of SYMBOLS
+    ){
+
+      const r =
+        await evaluateSymbol(
+          symbol
+        );
 
 
-  if(
-    existing
-  ){
-
-    return existing;
-
-  }
-
-
-  const promise =
-    (async() => {
-
-      const [
-
-        data4h,
-
-        data1h,
-
-        data15m
-
-      ] =
-
-        await Promise.all([
-
-          fetchHistoricalKlines(
-
-            symbol,
-
-            "4h",
-
-            range
-
-          ),
-
-          fetchHistoricalKlines(
-
-            symbol,
-
-            "1h",
-
-            range
-
-          ),
-
-          fetchHistoricalKlines(
-
-            symbol,
-
-            "15m",
-
-            range
-
-          )
-
-        ]);
-
-
-      for(
-
-        const [
-
-          name,
-
-          data
-
-        ]
-
-        of [
-
-          [
-            "4h",
-            data4h
-          ],
-
-          [
-            "1h",
-            data1h
-          ],
-
-          [
-            "15m",
-            data15m
-          ]
-
-        ]
-
+      if(
+        !r
       ){
 
-        const oosRows =
-          data.filter(
-
-            row =>
-
-              row.openTime >=
-                range.oosStart &&
-
-              row.openTime <
-                range.oosEnd
-
-          );
-
-
-        if(
-          !oosRows.length
-        ){
-
-          throw new Error(
-
-            `${symbol} ${name}：OOS 区间没有数据`
-
-          );
-
-        }
+        continue;
 
       }
 
 
-      return {
+      const last =
 
-        data4h,
+        state.lastClosed15m[
+          symbol
+        ] ||
 
-        data1h,
-
-        data15m
-
-      };
-
-    })();
+        0;
 
 
-  marketRequestCache.set(
+      if(
+        r.closedAt <=
+        last
 
-    requestKey,
+      ){
 
-    promise
+        continue;
 
-  );
+      }
 
 
-  promise.catch(
+      state.lastClosed15m[
+        symbol
+      ] =
+        r.closedAt;
 
-    () => {
 
-      marketRequestCache.delete(
-        requestKey
+      if(
+        !r.signal
+      ){
+
+        continue;
+
+      }
+
+
+      state.lastSignals.unshift(
+        r
+      );
+
+
+      state.lastSignals =
+        state.lastSignals.slice(
+          0,
+          100
+        );
+
+
+      log(
+
+        'SIGNAL',
+
+        {
+
+          symbol,
+
+          ...r.signal
+
+        }
+
+      );
+
+
+      const eq =
+        currentEquity();
+
+
+      const riskCash =
+        eq *
+        RISK;
+
+
+      const f =
+        state.filters[
+          symbol
+        ] ||
+        {};
+
+
+      let qty =
+
+        roundStep(
+
+          riskCash /
+          r.signal.stopDistance,
+
+          f.step
+
+        );
+
+
+      const plannedNotional =
+
+        qty *
+        r.signal.signalClose;
+
+
+      if(
+
+        !canOpen(
+
+          symbol,
+
+          plannedNotional
+
+        )
+
+      ){
+
+        log(
+
+          'ENTRY_REJECT_CAPACITY',
+
+          {
+
+            symbol,
+
+            plannedNotional
+
+          }
+
+        );
+
+
+        continue;
+
+      }
+
+
+      const entryDelay =
+
+        Math.max(
+
+          0,
+
+          r.closedAt +
+          15000 -
+          Date.now()
+
+        );
+
+
+      setTimeout(
+
+        async() => {
+
+          try{
+
+            await syncAccount();
+
+
+            if(
+
+              canOpen(
+
+                symbol,
+
+                qty *
+                r.signal.signalClose
+
+              )
+
+            ){
+
+              const side =
+
+                r.signal.side === 'LONG'
+
+                  ? 'BUY'
+
+                  : 'SELL';
+
+
+              await placeEntry(
+
+                symbol,
+
+                side,
+
+                qty,
+
+                r.signal.stop
+
+              );
+
+            }else{
+
+              log(
+
+                'ENTRY_REJECT_CAPACITY',
+
+                {
+
+                  symbol
+
+                }
+
+              );
+
+            }
+
+          }catch(e){
+
+            log(
+
+              'ENTRY_ERROR',
+
+              {
+
+                symbol,
+
+                error:
+                  e.message
+
+              }
+
+            );
+
+          }
+
+        },
+
+        entryDelay
+
       );
 
     }
 
-  );
+
+    state.lastCycle =
+      Date.now();
 
 
-  return promise;
+  }catch(e){
+
+    log(
+
+      'CYCLE_ERROR',
+
+      {
+
+        error:
+          e.message
+
+      }
+
+    );
+
+  }
 
 }
 
 
 /*
  * ============================================================
- * Funding Rate
- *
- * Binance USD-M Futures
- *
- * /fapi/v1/fundingRate
+ * User Stream
  * ============================================================
  */
 
-async function fetchFundingPage({
+async function startUserStream(){
 
-  symbol,
+  if(
+    !API_KEY
+  ){
 
-  startTime,
+    return;
 
-  endTime,
+  }
 
-  limit = FUNDING_LIMIT
 
-}){
+  try{
 
-  const url =
-    new URL(
+    const d =
+      await postForm(
 
-      "/fapi/v1/fundingRate",
+        '/fapi/v1/listenKey',
 
-      BINANCE_FUNDING_BASE
+        {},
+
+        false
+
+      );
+
+
+    const key =
+      d.listenKey;
+
+
+    const ws =
+
+      new WebSocket(
+
+        WS_BASE +
+        '/ws/' +
+        key
+
+      );
+
+
+    ws.on(
+
+      'open',
+
+      () =>
+
+        log(
+          'USER_WS_CONNECTED'
+        )
 
     );
 
 
-  url.searchParams.set(
+    ws.on(
 
-    "symbol",
+      'message',
 
-    symbol
+      buf => {
+
+        try{
+
+          const x =
+            JSON.parse(
+              buf.toString()
+            );
+
+
+          if(
+
+            x.e ===
+            'ORDER_TRADE_UPDATE' ||
+
+            x.e ===
+            'ACCOUNT_UPDATE'
+
+          ){
+
+            log(
+
+              'USER_EVENT',
+
+              {
+
+                event:
+                  x.e
+
+              }
+
+            );
+
+          }
+
+        }catch{}
+
+      }
+
+    );
+
+
+    ws.on(
+
+      'close',
+
+      () => {
+
+        log(
+          'USER_WS_CLOSED'
+        );
+
+
+        setTimeout(
+
+          startUserStream,
+
+          5000
+
+        );
+
+      }
+
+    );
+
+
+    ws.on(
+
+      'error',
+
+      e =>
+
+        log(
+
+          'USER_WS_ERROR',
+
+          {
+
+            error:
+              e.message
+
+          }
+
+        )
+
+    );
+
+
+    setInterval(
+
+      async() => {
+
+        try{
+
+          await putForm(
+
+            '/fapi/v1/listenKey',
+
+            {
+
+              listenKey:
+                key
+
+            }
+
+          );
+
+        }catch(e){
+
+          log(
+
+            'USER_WS_KEEPALIVE_ERROR',
+
+            {
+
+              error:
+                e.message
+
+            }
+
+          );
+
+        }
+
+      },
+
+      30 *
+      60 *
+      1000
+
+    );
+
+  }catch(e){
+
+    log(
+
+      'USER_WS_START_ERROR',
+
+      {
+
+        error:
+          e.message
+
+      }
+
+    );
+
+  }
+
+}
+
+
+/*
+ * ============================================================
+ * Init
+ * ============================================================
+ */
+
+async function init(){
+
+  /*
+   * Demo/Testnet 账户接口不可用时，
+   * 不再让整个本地服务退出。
+   *
+   * Funding / 行情诊断仍然可以运行。
+   */
+
+  try{
+
+    await loadExchangeInfo();
+
+    log(
+      'EXCHANGE_INFO_READY'
+    );
+
+  }catch(e){
+
+    log(
+
+      'EXCHANGE_INFO_ERROR',
+
+      {
+
+        error:
+          e.message
+
+      }
+
+    );
+
+  }
+
+
+  try{
+
+    await syncAccount();
+
+    log(
+      'ACCOUNT_READY'
+    );
+
+  }catch(e){
+
+    state.account =
+      null;
+
+    state.positions =
+      [];
+
+
+    log(
+
+      'ACCOUNT_ERROR',
+
+      {
+
+        error:
+          e.message
+
+      }
+
+    );
+
+  }
+
+
+  log(
+
+    'READY',
+
+    {
+
+      base:
+        BASE,
+
+      publicBase:
+        PUBLIC_BASE,
+
+      autoTrade:
+        AUTO_TRADE,
+
+      symbols:
+        SYMBOLS
+
+    }
 
   );
 
 
-  url.searchParams.set(
+  startUserStream();
 
-    "startTime",
 
-    String(
-      startTime
+  setInterval(
+
+    runCycle,
+
+    20000
+
+  );
+
+
+  try{
+
+    await runCycle();
+
+  }catch(e){
+
+    log(
+
+      'FIRST_CYCLE_ERROR',
+
+      {
+
+        error:
+          e.message
+
+      }
+
+    );
+
+  }
+
+}
+
+
+/*
+ * ============================================================
+ * JSON Response
+ * ============================================================
+ */
+
+function json(
+
+  res,
+
+  status,
+
+  data
+
+){
+
+  res.writeHead(
+
+    status,
+
+    {
+
+      'Content-Type':
+        'application/json; charset=utf-8',
+
+      'Access-Control-Allow-Origin':
+        '*'
+
+    }
+
+  );
+
+
+  res.end(
+    JSON.stringify(
+      data
     )
-
   );
 
-
-  url.searchParams.set(
-
-    "endTime",
-
-    String(
-      endTime
-    )
-
-  );
+}
 
 
-  url.searchParams.set(
+/*
+ * ============================================================
+ * Router
+ * ============================================================
+ */
 
-    "limit",
+async function route(
 
-    String(
+  req,
 
-      Math.min(
+  res
 
-        limit,
+){
 
-        FUNDING_LIMIT
+  const u =
+    new URL(
 
-      )
+      req.url,
 
-    )
-
-  );
-
-
-  const controller =
-    new AbortController();
-
-
-  const timeoutId =
-    setTimeout(
-
-      () =>
-
-        controller.abort(),
-
-      FUNDING_TIMEOUT
+      'http://127.0.0.1'
 
     );
 
 
   try{
 
-    const response =
-      await fetch(
+    /*
+     * Health
+     */
 
-        url,
+    if(
+
+      u.pathname ===
+      '/api/health'
+
+    ){
+
+      return json(
+
+        res,
+
+        200,
 
         {
 
-          signal:
-            controller.signal,
+          ok:
+            true,
 
-          headers:{
+          version:
+            '3.7.18.10',
 
-            "User-Agent":
-              "Quant-V3.7.6",
+          autoTrade:
+            AUTO_TRADE,
 
-            "Accept":
-              "application/json"
-
-          }
+          base:
+            BASE
 
         }
 
       );
 
-
-    const text =
-      await response.text();
+    }
 
 
-    const contentType =
-      response.headers.get(
-
-        "content-type"
-
-      ) || "";
-
+    /*
+     * Demo Ping
+     */
 
     if(
-      !response.ok
+
+      u.pathname ===
+      '/api/demo/ping'
+
     ){
 
-      throw new Error(
+      return json(
 
-        `Funding API HTTP ${response.status}: ` +
+        res,
 
-        `${text.slice(0,300)}`
+        200,
 
-      );
+        {
 
-    }
+          ok:
+            true,
 
+          data:
 
-    let json;
+            await api(
 
+              'GET',
 
-    try{
-
-      json =
-        JSON.parse(
-          text
-        );
-
-    }catch(error){
-
-      throw new Error(
-
-        "Funding API 返回的不是 JSON：" +
-
-        `content-type=${contentType}; ` +
-
-        `body=${text.slice(0,300)}`
-
-      );
-
-    }
-
-
-    if(
-      !Array.isArray(json)
-    ){
-
-      throw new Error(
-
-        "Funding API 返回结构不是数组"
-
-      );
-
-    }
-
-
-    return {
-
-      url:
-        url.toString(),
-
-      status:
-        response.status,
-
-      contentType,
-
-      bytes:
-        Buffer.byteLength(
-
-          text,
-
-          "utf8"
-
-        ),
-
-      rows:
-        json
-
-    };
-
-  }finally{
-
-    clearTimeout(
-      timeoutId
-    );
-
-  }
-
-}
-
-
-/*
- * ============================================================
- * Funding History
- *
- * 自动分页。
- * ============================================================
- */
-
-async function fetchFundingHistory({
-
-  symbol,
-
-  startTime,
-
-  endTime
-
-}){
-
-  const cacheKey =
-
-    `${SERVER_VERSION}:funding:` +
-
-    `${symbol}:` +
-
-    `${startTime}:` +
-
-    `${endTime}`;
-
-
-  const cached =
-    fundingCache.get(
-      cacheKey
-    );
-
-
-  if(
-    cached
-  ){
-
-    return cached;
-
-  }
-
-
-  const existing =
-    fundingRequestCache.get(
-      cacheKey
-    );
-
-
-  if(
-    existing
-  ){
-
-    return existing;
-
-  }
-
-
-  const promise =
-    (async() => {
-
-      const all = [];
-
-
-      let cursor =
-        startTime;
-
-
-      let requestCount =
-        0;
-
-
-      let lastFundingTime =
-        null;
-
-
-      while(
-        cursor <= endTime
-      ){
-
-        requestCount++;
-
-
-        const page =
-          await fetchFundingPage({
-
-            symbol,
-
-            startTime:
-              cursor,
-
-            endTime,
-
-            limit:
-              FUNDING_LIMIT
-
-          });
-
-
-        const rows =
-          page.rows
-
-            .filter(
-
-              row =>
-
-                row &&
-
-                row.symbol ===
-                  symbol &&
-
-                Number.isFinite(
-
-                  Number(
-                    row.fundingTime
-                  )
-
-                ) &&
-
-                Number.isFinite(
-
-                  Number(
-                    row.fundingRate
-                  )
-
-                )
+              '/fapi/v1/ping'
 
             )
 
-            .sort(
+        }
 
-              (a,b) =>
+      );
+
+    }
+
+
+    /*
+     * Demo Account
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/demo/account'
+
+    ){
+
+      return json(
+
+        res,
+
+        200,
+
+        {
+
+          ok:
+            true,
+
+          data:
+            await syncAccount()
+
+        }
+
+      );
+
+    }
+
+
+    /*
+     * Demo Open Orders
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/demo/openOrders'
+
+    ){
+
+      return json(
+
+        res,
+
+        200,
+
+        {
+
+          ok:
+            true,
+
+          data:
+
+            await api(
+
+              'GET',
+
+              '/fapi/v1/openOrders',
+
+              {
+
+                symbol:
+
+                  u.searchParams.get(
+                    'symbol'
+                  ) ||
+
+                  undefined
+
+              },
+
+              true
+
+            )
+
+        }
+
+      );
+
+    }
+
+
+    /*
+     * Funding
+     *
+     * 三个入口全部指向同一个
+     * Public Data Funding Archive。
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/funding' ||
+
+      u.pathname ===
+      '/api/funding-rate' ||
+
+      u.pathname ===
+      '/api/market/funding'
+
+    ){
+
+      return await handleFunding(
+
+        req,
+
+        res,
+
+        u
+
+      );
+
+    }
+
+
+    /*
+     * Historical Market
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/market'
+
+    ){
+
+      return await handleMarket(
+
+        req,
+
+        res,
+
+        u
+
+      );
+
+    }
+
+
+    /*
+     * Live Klines
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/live/klines'
+
+    ){
+
+      return json(
+
+        res,
+
+        200,
+
+        {
+
+          ok:
+            true,
+
+          data:
+
+            await getKlines(
+
+              u.searchParams.get(
+                'symbol'
+              ),
+
+              u.searchParams.get(
+                'interval'
+              ) ||
+
+              '15m',
+
+              Math.min(
+
+                500,
 
                 Number(
-                  a.fundingTime
-                ) -
 
-                Number(
-                  b.fundingTime
+                  u.searchParams.get(
+                    'limit'
+                  ) ||
+
+                  200
+
                 )
 
-            );
+              )
+
+            )
+
+        }
+
+      );
+
+    }
 
 
-        for(
-          const row
-          of rows
-        ){
+    /*
+     * Exchange Info
+     */
 
-          const fundingTime =
-            Number(
-              row.fundingTime
-            );
+    if(
+
+      u.pathname ===
+      '/api/demo/exchangeInfo'
+
+    ){
+
+      return json(
+
+        res,
+
+        200,
+
+        {
+
+          ok:
+            true,
+
+          data:
+
+            state.exchangeInfo ||
+
+            await loadExchangeInfo()
+
+        }
+
+      );
+
+    }
 
 
-          if(
+    /*
+     * State
+     */
 
-            fundingTime >=
-              startTime &&
+    if(
 
-            fundingTime <=
-              endTime
+      u.pathname ===
+      '/api/state'
 
-          ){
+    ){
 
-            all.push({
+      return json(
 
-              symbol:
-                row.symbol,
+        res,
 
-              fundingRate:
-                Number(
-                  row.fundingRate
-                ),
+        200,
 
-              fundingTime,
+        {
 
-              markPrice:
+          ok:
+            true,
 
-                Number.isFinite(
+          state:{
 
-                  Number(
-                    row.markPrice
-                  )
+            ...state,
 
-                )
-
-                  ?
-
-                Number(
-                  row.markPrice
-                )
-
-                  :
-
-                null,
-
-              rateType:
-                row.rateType ||
-                "Regular"
-
-            });
+            exchangeInfo:
+              undefined
 
           }
 
         }
 
-
-        if(
-          !rows.length
-        ){
-
-          break;
-
-        }
-
-
-        const pageLastTime =
-          Number(
-
-            rows[
-              rows.length - 1
-            ].fundingTime
-
-          );
-
-
-        if(
-
-          lastFundingTime !== null &&
-
-          pageLastTime <=
-            lastFundingTime
-
-        ){
-
-          break;
-
-        }
-
-
-        lastFundingTime =
-          pageLastTime;
-
-
-        if(
-          pageLastTime >= endTime
-        ){
-
-          break;
-
-        }
-
-
-        cursor =
-          pageLastTime + 1;
-
-
-        if(
-          rows.length <
-          FUNDING_LIMIT
-        ){
-
-          break;
-
-        }
-
-
-        if(
-          requestCount > 100
-        ){
-
-          throw new Error(
-
-            "Funding API 分页超过 100 次，已停止"
-
-          );
-
-        }
-
-      }
-
-
-      const map =
-        new Map();
-
-
-      for(
-        const row
-        of all
-      ){
-
-        map.set(
-
-          `${row.symbol}:${row.fundingTime}`,
-
-          row
-
-        );
-
-      }
-
-
-      const rows =
-        Array.from(
-          map.values()
-        )
-        .sort(
-
-          (a,b) =>
-
-            a.fundingTime -
-            b.fundingTime
-
-        );
-
-
-      const output = {
-
-        symbol,
-
-        startTime,
-
-        endTime,
-
-        startTimeISO:
-          new Date(
-            startTime
-          ).toISOString(),
-
-        endTimeISO:
-          new Date(
-            endTime
-          ).toISOString(),
-
-        rows,
-
-        count:
-          rows.length,
-
-        requestCount,
-
-        source:
-          `${BINANCE_FUNDING_BASE}/fapi/v1/fundingRate`
-
-      };
-
-
-      fundingCache.set(
-
-        cacheKey,
-
-        output
-
-      );
-
-
-      return output;
-
-    })();
-
-
-  fundingRequestCache.set(
-
-    cacheKey,
-
-    promise
-
-  );
-
-
-  promise.catch(
-
-    () => {
-
-      fundingRequestCache.delete(
-        cacheKey
       );
 
     }
 
-  );
+
+    /*
+     * Demo Order
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/demo/order' &&
+
+      req.method ===
+      'POST'
+
+    ){
+
+      let b =
+        '';
 
 
-  return promise;
+      for await(
+        const c of req
+      ){
+
+        b += c;
+
+      }
+
+
+      const p =
+        JSON.parse(
+          b || '{}'
+        );
+
+
+      if(
+
+        !p.symbol ||
+
+        !p.side
+
+      ){
+
+        throw new Error(
+          'symbol/side required'
+        );
+
+      }
+
+
+      return json(
+
+        res,
+
+        200,
+
+        {
+
+          ok:
+            true,
+
+          data:
+
+            await postForm(
+
+              '/fapi/v1/order',
+
+              p,
+
+              true
+
+            )
+
+        }
+
+      );
+
+    }
+
+
+    /*
+     * Demo Cancel
+     */
+
+    if(
+
+      u.pathname ===
+      '/api/demo/cancel' &&
+
+      req.method ===
+      'POST'
+
+    ){
+
+      let b =
+        '';
+
+
+      for await(
+        const c of req
+      ){
+
+        b += c;
+
+      }
+
+
+      const p =
+        JSON.parse(
+          b || '{}'
+        );
+
+
+      return json(
+
+        res,
+
+        200,
+
+        {
+
+          ok:
+            true,
+
+          data:
+
+            await api(
+
+              'DELETE',
+
+              '/fapi/v1/order',
+
+              p,
+
+              true
+
+            )
+
+        }
+
+      );
+
+    }
+
+
+    /*
+     * Frontend
+     */
+
+    if(
+      u.pathname === '/'
+    ){
+
+      return sendFile(
+
+        res,
+
+        path.join(
+
+          __dirname,
+
+          'Quant_V3.7.18.10.html'
+
+        ),
+
+        'text/html; charset=utf-8'
+
+      );
+
+    }
+
+
+    /*
+     * README
+     */
+
+    if(
+
+      u.pathname ===
+      '/README.md'
+
+    ){
+
+      return sendFile(
+
+        res,
+
+        path.join(
+          __dirname,
+          'README.md'
+        ),
+
+        'text/plain; charset=utf-8'
+
+      );
+
+    }
+
+
+    return json(
+
+      res,
+
+      404,
+
+      {
+
+        ok:
+          false,
+
+        error:
+          'not found'
+
+      }
+
+    );
+
+  }catch(e){
+
+    return json(
+
+      res,
+
+      500,
+
+      {
+
+        ok:
+          false,
+
+        error:
+          e.message
+
+      }
+
+    );
+
+  }
 
 }
 
 
 /*
  * ============================================================
- * /api/market
+ * Send File
  * ============================================================
  */
 
-app.get(
+function sendFile(
 
-  "/api/market",
+  res,
 
-  async(
+  p,
 
-    req,
+  type
 
-    res
+){
 
-  ) => {
+  try{
 
-    try{
-
-      const symbol =
-        String(
-
-          req.query.symbol ||
-          ""
-
-        ).toUpperCase();
+    const b =
+      fs.readFileSync(
+        p
+      );
 
 
-      if(
+    res.writeHead(
 
-        !/^[A-Z0-9]{5,20}$/.test(
-          symbol
-        )
+      200,
 
-      ){
+      {
 
-        return res
-
-          .status(400)
-
-          .json({
-
-            ok:false,
-
-            version:
-              SERVER_VERSION,
-
-            error:
-              "symbol 参数错误"
-
-          });
+        'Content-Type':
+          type
 
       }
 
-
-      const range =
-        resolveRange(
-          req
-        );
+    );
 
 
-      const {
+    res.end(
+      b
+    );
 
-        data4h,
+  }catch(e){
 
-        data1h,
-
-        data15m
-
-      } =
-
-        await executeMarketRequest(
-
-          symbol,
-
-          range
-
-        );
+    res.writeHead(
+      404
+    );
 
 
-      return res.json({
+    res.end(
+      'not found'
+    );
 
-        ok:true,
+  }
 
-        version:
-          SERVER_VERSION,
+}
 
-        symbol,
 
-        meta:
-          getMeta(
-            range
-          ),
+/*
+ * ============================================================
+ * HTTP Server
+ * ============================================================
+ */
 
-        data:{
+http
 
-          "4h":
-            data4h,
+  .createServer(
+    route
+  )
 
-          "1h":
-            data1h,
+  .listen(
 
-          "15m":
-            data15m
+    PORT,
+
+    () => {
+
+      log(
+
+        'HTTP_READY',
+
+        {
+
+          url:
+            `http://127.0.0.1:${PORT}`,
+
+          autoTrade:
+            AUTO_TRADE
 
         }
 
-      });
+      );
 
-    }catch(error){
+    }
 
-      console.error(
+  );
 
-        `${SERVER_VERSION} Market error:`,
 
-        error
+/*
+ * ============================================================
+ * Start
+ * ============================================================
+ */
+
+init()
+
+  .catch(
+
+    e => {
+
+      log(
+
+        'INIT_FATAL',
+
+        {
+
+          error:
+            e.message
+
+        }
 
       );
 
 
-      return res
-
-        .status(500)
-
-        .json({
-
-          ok:false,
-
-          version:
-            SERVER_VERSION,
-
-          error:
-
-            error.message ||
-
-            "获取历史行情失败"
-
-        });
+      process.exitCode =
+        1;
 
     }
 
-  }
-
-);
-
-
-/*
- * ============================================================
- * /api/funding
- *
- * 这里必须在 SPA fallback 前面。
- * ============================================================
- */
-
-app.get(
-
-  "/api/funding",
-
-  async(
-
-    req,
-
-    res
-
-  ) => {
-
-    try{
-
-      const symbol =
-        String(
-
-          req.query.symbol ||
-          ""
-
-        ).toUpperCase();
-
-
-      if(
-
-        !/^[A-Z0-9]{5,20}$/.test(
-          symbol
-        )
-
-      ){
-
-        return res
-
-          .status(400)
-
-          .json({
-
-            ok:false,
-
-            version:
-              SERVER_VERSION,
-
-            error:
-              "symbol 参数错误"
-
-          });
-
-      }
-
-
-      const range =
-        resolveRange(
-          req
-        );
-
-
-      const result =
-        await fetchFundingHistory({
-
-          symbol,
-
-          startTime:
-            range.oosStart,
-
-          endTime:
-            range.oosEnd
-
-        });
-
-
-      return res.json({
-
-        ok:true,
-
-        version:
-          SERVER_VERSION,
-
-        symbol,
-
-        source:
-          result.source,
-
-        startTime:
-          result.startTime,
-
-        endTime:
-          result.endTime,
-
-        startTimeISO:
-          result.startTimeISO,
-
-        endTimeISO:
-          result.endTimeISO,
-
-        count:
-          result.count,
-
-        requestCount:
-          result.requestCount,
-
-        data:
-          result.rows,
-
-        funding:
-          result.rows
-
-      });
-
-    }catch(error){
-
-      console.error(
-
-        "[FUNDING ERROR]",
-
-        error
-
-      );
-
-
-      return res
-
-        .status(502)
-
-        .json({
-
-          ok:false,
-
-          version:
-            SERVER_VERSION,
-
-          error:
-
-            error.message ||
-
-            "Funding API 获取失败"
-
-        });
-
-    }
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * /api/funding/cache/clear
- * ============================================================
- */
-
-app.get(
-
-  "/api/funding/cache/clear",
-
-  (
-
-    req,
-
-    res
-
-  ) => {
-
-    fundingCache.clear();
-
-    fundingRequestCache.clear();
-
-
-    return res.json({
-
-      ok:true,
-
-      version:
-        SERVER_VERSION,
-
-      message:
-        "Funding 缓存已清除"
-
-    });
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * /api/cache/clear
- * ============================================================
- */
-
-app.get(
-
-  "/api/cache/clear",
-
-  (
-
-    req,
-
-    res
-
-  ) => {
-
-    zipCache.clear();
-
-    historicalCache.clear();
-
-    marketRequestCache.clear();
-
-    fundingCache.clear();
-
-    fundingRequestCache.clear();
-
-    progressState.clear();
-
-
-    return res.json({
-
-      ok:true,
-
-      version:
-        SERVER_VERSION,
-
-      message:
-        "行情缓存、历史数据缓存、Market 请求缓存、Funding 缓存已清除"
-
-    });
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * /api/status
- * ============================================================
- */
-
-app.get(
-
-  "/api/status",
-
-  (
-
-    req,
-
-    res
-
-  ) => {
-
-    try{
-
-      const range =
-        resolveRange(
-          req
-        );
-
-
-      return res.json({
-
-        ok:true,
-
-        version:
-          SERVER_VERSION,
-
-        source:
-          "Binance USD-M Futures Public Data",
-
-        dataMode:
-          "Monthly + Daily",
-
-        market:
-          "USD-M Futures",
-
-        ...getMeta(
-          range
-        ),
-
-        cacheSize:
-          historicalCache.size,
-
-        activeDownloads,
-
-        queuedDownloads:
-          downloadQueue.length,
-
-        downloadStats,
-
-        serverTime:
-          nowIso()
-
-      });
-
-    }catch(error){
-
-      return res
-
-        .status(400)
-
-        .json({
-
-          ok:false,
-
-          version:
-            SERVER_VERSION,
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * /api/debug
- * ============================================================
- */
-
-app.get(
-
-  "/api/debug",
-
-  (
-
-    req,
-
-    res
-
-  ) => {
-
-    return res.json({
-
-      ok:true,
-
-      version:
-        SERVER_VERSION,
-
-      serverTime:
-        nowIso(),
-
-      cache:{
-
-        zipCache:
-          zipCache.size,
-
-        historicalCache:
-          historicalCache.size,
-
-        marketRequestCache:
-          marketRequestCache.size,
-
-        fundingCache:
-          fundingCache.size,
-
-        fundingRequestCache:
-          fundingRequestCache.size
-
-      },
-
-      downloads:{
-
-        active:
-          activeDownloads,
-
-        queued:
-          downloadQueue.length,
-
-        concurrency:
-          DOWNLOAD_CONCURRENCY,
-
-        timeoutMs:
-          DOWNLOAD_TIMEOUT,
-
-        maxRetries:
-          MAX_RETRIES
-
-      },
-
-      funding:{
-
-        base:
-          BINANCE_FUNDING_BASE,
-
-        timeoutMs:
-          FUNDING_TIMEOUT,
-
-        limit:
-          FUNDING_LIMIT
-
-      },
-
-      stats:
-        downloadStats,
-
-      progress:
-        Array.from(
-          progressState.values()
-        )
-
-    });
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * /api/progress
- * ============================================================
- */
-
-app.get(
-
-  "/api/progress",
-
-  (
-
-    req,
-
-    res
-
-  ) => {
-
-    return res.json({
-
-      ok:true,
-
-      version:
-        SERVER_VERSION,
-
-      serverTime:
-        nowIso(),
-
-      activeDownloads,
-
-      queuedDownloads:
-        downloadQueue.length,
-
-      progress:
-        Array.from(
-          progressState.values()
-        )
-
-    });
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * /api/health
- * ============================================================
- */
-
-app.get(
-
-  "/api/health",
-
-  (
-
-    req,
-
-    res
-
-  ) => {
-
-    return res.json({
-
-      ok:true,
-
-      version:
-        SERVER_VERSION,
-
-      serverTime:
-        nowIso(),
-
-      uptime:
-        process.uptime(),
-
-      memory:
-        process.memoryUsage()
-
-    });
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * SPA fallback
- *
- * 必须最后。
- * ============================================================
- */
-
-app.get(
-
-  /.*/,
-
-  (
-
-    req,
-
-    res
-
-  ) => {
-
-    res.sendFile(
-
-      path.join(
-
-        __dirname,
-
-        "index.html"
-
-      )
-
-    );
-
-  }
-
-);
-
-
-/*
- * ============================================================
- * Render
- * ============================================================
- */
-
-const PORT =
-  process.env.PORT || 3000;
-
-
-app.listen(
-
-  PORT,
-
-  "0.0.0.0",
-
-  () => {
-
-    console.log(
-      "================================================"
-    );
-
-
-    console.log(
-
-      `Quant ${SERVER_VERSION} Server`
-
-    );
-
-
-    console.log(
-
-      `Server running on port ${PORT}`
-
-    );
-
-
-    console.log(
-
-      "数据源：Binance Public Data"
-
-    );
-
-
-    console.log(
-
-      "Funding：Binance USD-M Futures /fapi/v1/fundingRate"
-
-    );
-
-
-    console.log(
-
-      "市场：Binance USD-M Futures"
-
-    );
-
-
-    console.log(
-
-      "下载并发：",
-
-      DOWNLOAD_CONCURRENCY
-
-    );
-
-
-    console.log(
-
-      "下载超时：",
-
-      `${DOWNLOAD_TIMEOUT / 1000}s`
-
-    );
-
-
-    console.log(
-
-      "最大重试：",
-
-      MAX_RETRIES
-
-    );
-
-
-    console.log(
-
-      "OOS：",
-
-      new Date(
-        DEFAULT_OOS_START
-      ).toISOString(),
-
-      "→",
-
-      new Date(
-        DEFAULT_OOS_END
-      ).toISOString()
-
-    );
-
-
-    console.log(
-
-      "Warmup：",
-
-      new Date(
-        DEFAULT_WARMUP_START
-      ).toISOString(),
-
-      "→",
-
-      new Date(
-        DEFAULT_OOS_START
-      ).toISOString()
-
-    );
-
-
-    console.log(
-      "================================================"
-    );
-
-  }
-
-);
+  );
