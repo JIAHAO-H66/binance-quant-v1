@@ -4,34 +4,87 @@ const dns = require('dns');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { WebSocket } = require('ws');
 const AdmZip = require('adm-zip');
 const { URL } = require('url');
 
 function loadEnv(){
-  const p=path.join(__dirname,'.env');
-  if(!fs.existsSync(p)) return;
 
-  for(const line of fs.readFileSync(p,'utf8').split(/\r?\n/)){
-    const s=line.trim();
+  const p =
+    path.join(
+      __dirname,
+      '.env'
+    );
 
-    if(!s || s.startsWith('#')) continue;
+  if(
+    !fs.existsSync(p)
+  ){
 
-    const i=s.indexOf('=');
+    return;
 
-    if(i<0) continue;
-
-    const k=s.slice(0,i).trim();
-
-    const v=s
-      .slice(i+1)
-      .trim()
-      .replace(/^['"]|['"]$/g,'');
-
-    if(process.env[k]===undefined){
-      process.env[k]=v;
-    }
   }
+
+  for(
+    const line of
+      fs.readFileSync(
+        p,
+        'utf8'
+      ).split(/\r?\n/)
+  ){
+
+    const s =
+      line.trim();
+
+    if(
+      !s ||
+      s.startsWith('#')
+    ){
+
+      continue;
+
+    }
+
+    const i =
+      s.indexOf('=');
+
+    if(
+      i < 0
+    ){
+
+      continue;
+
+    }
+
+    const k =
+      s.slice(
+        0,
+        i
+      ).trim();
+
+    const v =
+      s
+        .slice(
+          i + 1
+        )
+        .trim()
+        .replace(
+          /^['"]|['"]$/g,
+          ''
+        );
+
+    if(
+      process.env[k] ===
+      undefined
+    ){
+
+      process.env[k] =
+        v;
+
+    }
+
+  }
+
 }
 
 loadEnv();
@@ -39,7 +92,7 @@ loadEnv();
 
 /*
  * ============================================================
- * Quant V3.7.18.10
+ * Quant V3.7.18.11
  *
  * Binance USD-M Futures
  *
@@ -52,13 +105,23 @@ loadEnv();
  * 3. 保留原风险参数
  * 4. 保留 Demo/Testnet 安全闸门
  * 5. 保留原行情接口
- * 6. Funding 改为 Binance Public Data 历史归档
- * 7. Funding 不再依赖受限地区的实时 Funding API
+ * 6. Funding 使用 Binance Public Data 历史归档
+ * 7. Funding 不依赖受限地区实时 Funding API
  * 8. Funding 数据加入完整性诊断
  * 9. Funding 没有真实数据时绝不伪造
+ * 10. Demo/Testnet hostname 严格白名单
+ * 11. Funding gzip 归档兼容
+ * 12. 当前月份 Funding 缓存自动刷新
+ * 13. 入场后止损失败自动重试
+ * 14. 止损持续失败时执行紧急平仓
+ *
+ * 正式策略逻辑不修改。
  *
  * ============================================================
  */
+
+const VERSION =
+  '3.7.18.11';
 
 
 /*
@@ -84,18 +147,14 @@ try{
 
 const PORT =
   Number(
-    process.env.PORT || 8787
+    process.env.PORT ||
+    8787
   );
 
 
 /*
  * ============================================================
  * Demo / Testnet 交易地址
- *
- * 注意：
- *
- * 这里只允许 Demo / Testnet。
- *
  * ============================================================
  */
 
@@ -107,9 +166,6 @@ const BASE =
 /*
  * ============================================================
  * Public Market Data
- *
- * 只读。
- *
  * ============================================================
  */
 
@@ -153,8 +209,10 @@ const API_SECRET =
 
 const AUTO_TRADE =
   String(
-    process.env.AUTO_TRADE || 'false'
-  ).toLowerCase() === 'true';
+    process.env.AUTO_TRADE ||
+    'false'
+  ).toLowerCase() ===
+  'true';
 
 
 /*
@@ -382,21 +440,66 @@ const ENTRY_COOLDOWN_BARS =
 
 /*
  * ============================================================
- * 安全闸门
+ * Demo/Testnet 安全闸门
  *
- * 禁止生产环境。
+ * 严格检查 hostname。
+ *
+ * 禁止：
+ *
+ * fapi.binance.com
+ *
  * ============================================================
  */
 
+const ALLOWED_DEMO_HOSTS = new Set([
+
+  'demo-fapi.binance.com',
+
+  'testnet.binancefuture.com'
+
+]);
+
+
+function isAllowedDemoBase(
+  value
+){
+
+  try{
+
+    const u =
+      new URL(
+        value
+      );
+
+    return (
+
+      u.protocol ===
+      'https:' &&
+
+      ALLOWED_DEMO_HOSTS.has(
+        u.hostname.toLowerCase()
+      )
+
+    );
+
+  }catch{
+
+    return false;
+
+  }
+
+}
+
+
 if(
-  !/demo-fapi\.binance\.com|testnet\.binancefuture\.com/i.test(
+  !isAllowedDemoBase(
     BASE
   )
 ){
 
   throw new Error(
 
-    'SAFETY STOP: BINANCE_FUTURES_BASE_URL must be a Demo/Testnet host. Production fapi.binance.com is refused.'
+    'SAFETY STOP: BINANCE_FUTURES_BASE_URL must be exactly an allowed Binance Demo/Testnet HTTPS host.'
 
   );
 
@@ -451,11 +554,8 @@ const state = {
  */
 
 function log(
-
   msg,
-
   extra
-
 ){
 
   const line =
@@ -505,13 +605,9 @@ function log(
  */
 
 function clamp(
-
   x,
-
   a,
-
   b
-
 ){
 
   return Math.max(
@@ -535,11 +631,8 @@ function clamp(
  */
 
 function ema(
-
   values,
-
   p
-
 ){
 
   if(
@@ -610,11 +703,8 @@ function ema(
  */
 
 function atr(
-
   data,
-
   p = 14
-
 ){
 
   const out =
@@ -751,11 +841,8 @@ function atr(
  */
 
 function gap(
-
   a,
-
   b
-
 ){
 
   return (
@@ -867,13 +954,9 @@ function loc(
  */
 
 function longPB(
-
   data,
-
   e20,
-
   i
-
 ){
 
   const start =
@@ -926,13 +1009,9 @@ function longPB(
  */
 
 function shortPB(
-
   data,
-
   e20,
-
   i
-
 ){
 
   const start =
@@ -985,11 +1064,8 @@ function shortPB(
  */
 
 function quality(
-
   side,
-
   vals
-
 ){
 
   let s =
@@ -1062,7 +1138,8 @@ function quality(
 
     10 *
     clamp01(
-      vals.bodyAtr / 1
+      vals.bodyAtr /
+      1
     );
 
 
@@ -1193,21 +1270,15 @@ function sign(
  */
 
 function requestText(
-
   url,
-
   options = {}
-
 ){
 
   return new Promise(
 
     (
-
       resolve,
-
       reject
-
     ) => {
 
       const u =
@@ -1290,9 +1361,7 @@ function requestText(
 
 
             res.on(
-
               'end',
-
               () => {
 
                 resolve({
@@ -1309,7 +1378,6 @@ function requestText(
                 });
 
               }
-
             );
 
           }
@@ -1318,17 +1386,13 @@ function requestText(
 
 
       req.on(
-
         'timeout',
-
         () =>
-
           req.destroy(
             new Error(
               'request timeout'
             )
           )
-
       );
 
 
@@ -1365,21 +1429,15 @@ function requestText(
  */
 
 function requestBuffer(
-
   url,
-
   options = {}
-
 ){
 
   return new Promise(
 
     (
-
       resolve,
-
       reject
-
     ) => {
 
       const u =
@@ -1450,21 +1508,16 @@ function requestBuffer(
 
 
             res.on(
-
               'data',
-
               c =>
                 chunks.push(
                   Buffer.from(c)
                 )
-
             );
 
 
             res.on(
-
               'end',
-
               () => {
 
                 resolve({
@@ -1484,7 +1537,6 @@ function requestBuffer(
                 });
 
               }
-
             );
 
           }
@@ -1493,17 +1545,13 @@ function requestBuffer(
 
 
       req.on(
-
         'timeout',
-
         () =>
-
           req.destroy(
             new Error(
               'request timeout'
             )
           )
-
       );
 
 
@@ -1529,11 +1577,8 @@ function requestBuffer(
  */
 
 async function requestJson(
-
   url,
-
   options = {}
-
 ){
 
   let lastErr =
@@ -1665,15 +1710,10 @@ async function requestJson(
  */
 
 async function api(
-
   method,
-
   pathName,
-
   params = {},
-
   signed = false
-
 ){
 
   const p =
@@ -1688,7 +1728,6 @@ async function api(
 
     p.timestamp =
       Date.now();
-
 
     p.recvWindow =
       5000;
@@ -1707,15 +1746,12 @@ async function api(
   const url =
 
     BASE +
-
     pathName +
 
     (
       query
-
         ? '?' +
           query
-
         : ''
     );
 
@@ -1763,13 +1799,9 @@ async function api(
  */
 
 async function postForm(
-
   pathName,
-
   params = {},
-
   signed = true
-
 ){
 
   const p =
@@ -1794,9 +1826,7 @@ async function postForm(
   const q =
 
     signed
-
       ? sign(p)
-
       : qs(p);
 
 
@@ -1886,11 +1916,8 @@ async function postForm(
  */
 
 async function putForm(
-
   pathName,
-
   params = {}
-
 ){
 
   const p =
@@ -1998,13 +2025,9 @@ async function putForm(
  */
 
 async function getKlines(
-
   symbol,
-
   interval,
-
   limit = 300
-
 ){
 
   const a =
@@ -2041,11 +2064,8 @@ async function getKlines(
  */
 
 function parseTime(
-
   v,
-
   fallback
-
 ){
 
   if(
@@ -2068,9 +2088,7 @@ function parseTime(
   ){
 
     return v < 1e12
-
       ? v * 1000
-
       : v;
 
   }
@@ -2085,9 +2103,7 @@ function parseTime(
   ){
 
     return n < 1e12
-
       ? n * 1000
-
       : n;
 
   }
@@ -2100,9 +2116,7 @@ function parseTime(
 
 
   return Number.isFinite(t)
-
     ? t
-
     : fallback;
 
 }
@@ -2142,11 +2156,8 @@ const INTERVAL_MS = {
  */
 
 async function publicApi(
-
   pathName,
-
   params = {}
-
 ){
 
   const query =
@@ -2156,15 +2167,12 @@ async function publicApi(
   const url =
 
     PUBLIC_BASE +
-
     pathName +
 
     (
       query
-
         ? '?' +
           query
-
         : ''
     );
 
@@ -2181,7 +2189,7 @@ async function publicApi(
       headers:{
 
         'User-Agent':
-          'Quant-V3.7.18.10/1.0'
+          `Quant-V${VERSION}/1.0`
 
       },
 
@@ -2202,15 +2210,10 @@ async function publicApi(
  */
 
 async function getHistoricalKlines(
-
   symbol,
-
   interval,
-
   startTime,
-
   endTime
-
 ){
 
   const step =
@@ -2446,9 +2449,7 @@ async function getHistoricalKlines(
  */
 
 function normalizeFundingRows(
-
   rows
-
 ){
 
   const out =
@@ -2565,7 +2566,6 @@ function normalizeFundingRows(
           interval > 0
 
             ? interval
-
             : 8,
 
         markPrice:
@@ -2593,6 +2593,14 @@ function normalizeFundingRows(
 /*
  * ============================================================
  * Funding Archive Cache
+ *
+ * 当前月份：
+ *
+ * 5 分钟自动刷新。
+ *
+ * 历史月份：
+ *
+ * 长期缓存。
  * ============================================================
  */
 
@@ -2600,17 +2608,19 @@ const fundingArchiveCache =
   new Map();
 
 
+const FUNDING_CURRENT_MONTH_TTL =
+  5 *
+  60 *
+  1000;
+
+
 /*
  * ============================================================
  * Binance Public Data Funding Archive
- *
- * USD-M Futures
- *
  * ============================================================
  */
 
 const FUNDING_ARCHIVE_BASE =
-
   'https://data.binance.vision/data/futures/um/monthly/fundingRate';
 
 
@@ -2679,11 +2689,8 @@ function nextMonth(
  */
 
 function fundingArchiveUrl(
-
   symbol,
-
   monthStart
-
 ){
 
   const d =
@@ -2740,7 +2747,7 @@ async function downloadArchive(
         headers:{
 
           'User-Agent':
-            'Quant-V3.7.18.10-FundingArchive/1.0'
+            `Quant-V${VERSION}-FundingArchive/1.0`
 
         },
 
@@ -2797,15 +2804,17 @@ async function downloadArchive(
 /*
  * ============================================================
  * Parse Funding ZIP
+ *
+ * 支持：
+ *
+ * CSV
+ * CSV.GZ
  * ============================================================
  */
 
 function parseFundingArchiveBuffer(
-
   buffer,
-
   symbol
-
 ){
 
   const zip =
@@ -2843,9 +2852,44 @@ function parseFundingArchiveBuffer(
   }
 
 
+  let raw =
+    entry.getData();
+
+
+  /*
+   * 如果 ZIP 内部是 CSV.GZ，
+   * 先解 gzip。
+   */
+
+  if(
+    /\.csv\.gz$/i.test(
+      entry.entryName
+    )
+  ){
+
+    try{
+
+      raw =
+        zlib.gunzipSync(
+          raw
+        );
+
+    }catch(e){
+
+      throw new Error(
+
+        'Funding CSV.GZ 解压失败: ' +
+        e.message
+
+      );
+
+    }
+
+  }
+
+
   const text =
-    entry
-      .getData()
+    raw
       .toString(
         'utf8'
       );
@@ -2952,13 +2996,9 @@ function parseFundingArchiveBuffer(
  */
 
 async function getHistoricalFunding(
-
   symbol,
-
   startTime,
-
   endTime
-
 ){
 
   let start =
@@ -3019,6 +3059,16 @@ async function getHistoricalFunding(
     [];
 
 
+  const now =
+    Date.now();
+
+
+  const currentMonth =
+    monthFloor(
+      now
+    );
+
+
   for(
 
     let m = first;
@@ -3031,23 +3081,42 @@ async function getHistoricalFunding(
 
     const url =
       fundingArchiveUrl(
-
         symbol,
-
         m
-
       );
 
 
-    let rows =
+    const isCurrentMonth =
+      m === currentMonth;
+
+
+    const cached =
       fundingArchiveCache.get(
         url
       );
 
 
+    let rows;
+
+
     if(
-      !rows
+
+      cached &&
+
+      (
+        !isCurrentMonth ||
+
+        now -
+        cached.cachedAt <
+        FUNDING_CURRENT_MONTH_TTL
+      )
+
     ){
+
+      rows =
+        cached.rows;
+
+    }else{
 
       const buf =
         await downloadArchive(
@@ -3071,7 +3140,14 @@ async function getHistoricalFunding(
 
         url,
 
-        rows
+        {
+
+          rows,
+
+          cachedAt:
+            Date.now()
+
+        }
 
       );
 
@@ -3140,22 +3216,13 @@ async function getHistoricalFunding(
 /*
  * ============================================================
  * Funding API
- *
- * /api/funding
- * /api/funding-rate
- * /api/market/funding
- *
  * ============================================================
  */
 
 async function handleFunding(
-
   req,
-
   res,
-
   u
-
 ){
 
   const symbol =
@@ -3261,8 +3328,9 @@ async function handleFunding(
   /*
    * 理论上每 8 小时一次。
    *
-   * 这里只作为近似诊断，
-   * 不把 expected 当作强制数据标准。
+   * 这里只作为近似诊断。
+   *
+   * 不把 expected 当成强制数据标准。
    */
 
   const expected =
@@ -3356,6 +3424,9 @@ async function handleFunding(
       source:
         'Binance Public Data fundingRate archive',
 
+      version:
+        VERSION,
+
       symbol,
 
       start:
@@ -3414,13 +3485,9 @@ async function handleFunding(
  */
 
 async function handleMarket(
-
   req,
-
   res,
-
   u
-
 ){
 
   const symbol =
@@ -3593,11 +3660,8 @@ async function handleMarket(
  */
 
 function roundStep(
-
   v,
-
   step
-
 ){
 
   if(
@@ -3639,11 +3703,8 @@ function roundStep(
 
 
 function roundPrice(
-
   v,
-
   tick
-
 ){
 
   if(
@@ -3911,11 +3972,8 @@ function currentEquity(){
  */
 
 function canOpen(
-
   symbol,
-
   plannedNotional = 0
-
 ){
 
   if(
@@ -3965,11 +4023,8 @@ function canOpen(
     state.positions.reduce(
 
       (
-
         a,
-
         p
-
       ) =>
 
         a +
@@ -4002,20 +4057,387 @@ function canOpen(
 
 /*
  * ============================================================
+ * Protective Stop
+ *
+ * 止损自动重试。
+ *
+ * 正常情况：
+ *
+ * Entry
+ * ↓
+ * Stop
+ *
+ * Stop 失败：
+ *
+ * Retry 1
+ * ↓
+ * Retry 2
+ * ↓
+ * Retry 3
+ * ↓
+ * Emergency Flat
+ *
+ * ============================================================
+ */
+
+async function placeProtectiveStop(
+  symbol,
+  stopSide,
+  stopPrice
+){
+
+  const f =
+    state.filters[
+      symbol
+    ] ||
+    {};
+
+
+  stopPrice =
+    roundPrice(
+      stopPrice,
+      f.tick
+    );
+
+
+  let lastError =
+    null;
+
+
+  const delays = [
+
+    0,
+
+    750,
+
+    1500
+
+  ];
+
+
+  for(
+    let attempt = 0;
+
+    attempt < delays.length;
+
+    attempt++
+
+  ){
+
+    if(
+      delays[attempt] > 0
+    ){
+
+      await new Promise(
+
+        resolve =>
+          setTimeout(
+            resolve,
+            delays[attempt]
+          )
+
+      );
+
+    }
+
+
+    try{
+
+      const stop =
+
+        await postForm(
+
+          '/fapi/v1/order',
+
+          {
+
+            symbol,
+
+            side:
+              stopSide,
+
+            type:
+              'STOP_MARKET',
+
+            stopPrice,
+
+            closePosition:
+              'true',
+
+            workingType:
+              'MARK_PRICE'
+
+          }
+
+        );
+
+
+      log(
+
+        'STOP_PLACED',
+
+        {
+
+          symbol,
+
+          stopPrice,
+
+          attempt:
+            attempt + 1,
+
+          orderId:
+            stop.orderId
+
+        }
+
+      );
+
+
+      return stop;
+
+    }catch(e){
+
+      lastError =
+        e;
+
+
+      log(
+
+        'STOP_RETRY_ERROR',
+
+        {
+
+          symbol,
+
+          stopPrice,
+
+          attempt:
+            attempt + 1,
+
+          error:
+            e.message
+
+        }
+
+      );
+
+    }
+
+  }
+
+
+  throw (
+
+    lastError ||
+
+    new Error(
+      'stop placement failed'
+    )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
+ * Emergency Market Close
+ *
+ * 用于：
+ *
+ * Entry 已经成功
+ *
+ * 但保护性 STOP_MARKET 连续失败。
+ *
+ * ============================================================
+ */
+
+async function emergencyClosePosition(
+  symbol,
+  entrySide,
+  qty
+){
+
+  const closeSide =
+
+    entrySide === 'BUY'
+
+      ? 'SELL'
+      : 'BUY';
+
+
+  const f =
+    state.filters[
+      symbol
+    ] ||
+    {};
+
+
+  const closeQty =
+    roundStep(
+      Number(qty),
+      f.step
+    );
+
+
+  if(
+
+    !Number.isFinite(
+      closeQty
+    ) ||
+
+    closeQty <= 0
+
+  ){
+
+    throw new Error(
+      'Emergency close quantity invalid'
+    );
+
+  }
+
+
+  let lastError =
+    null;
+
+
+  for(
+
+    let attempt = 1;
+
+    attempt <= 2;
+
+    attempt++
+
+  ){
+
+    try{
+
+      const order =
+
+        await postForm(
+
+          '/fapi/v1/order',
+
+          {
+
+            symbol,
+
+            side:
+              closeSide,
+
+            type:
+              'MARKET',
+
+            quantity:
+              closeQty,
+
+            reduceOnly:
+              'true',
+
+            newOrderRespType:
+              'RESULT'
+
+          }
+
+        );
+
+
+      log(
+
+        'EMERGENCY_FLAT_SUCCESS',
+
+        {
+
+          symbol,
+
+          side:
+            closeSide,
+
+          quantity:
+            closeQty,
+
+          attempt,
+
+          orderId:
+            order.orderId
+
+        }
+
+      );
+
+
+      return order;
+
+    }catch(e){
+
+      lastError =
+        e;
+
+
+      log(
+
+        'EMERGENCY_FLAT_RETRY_ERROR',
+
+        {
+
+          symbol,
+
+          attempt,
+
+          error:
+            e.message
+
+        }
+
+      );
+
+
+      if(
+        attempt < 2
+      ){
+
+        await new Promise(
+
+          resolve =>
+            setTimeout(
+              resolve,
+              1000
+            )
+
+        );
+
+      }
+
+    }
+
+  }
+
+
+  throw (
+
+    lastError ||
+
+    new Error(
+      'Emergency flat failed'
+    )
+
+  );
+
+}
+
+
+/*
+ * ============================================================
  * Place Entry
  * ============================================================
  */
 
 async function placeEntry(
-
   symbol,
-
   side,
-
   qty,
-
   stopPrice
-
 ){
 
   if(
@@ -4084,6 +4506,12 @@ async function placeEntry(
   }
 
 
+  /*
+   * ==========================================================
+   * 1. Entry
+   * ==========================================================
+   */
+
   const order =
     await postForm(
 
@@ -4109,6 +4537,19 @@ async function placeEntry(
     );
 
 
+  const executedQty =
+
+    Number(
+
+      order.executedQty ||
+
+      order.origQty ||
+
+      qty
+
+    );
+
+
   log(
 
     'ENTRY_FILLED',
@@ -4121,6 +4562,8 @@ async function placeEntry(
 
       qty,
 
+      executedQty,
+
       orderId:
         order.orderId
 
@@ -4129,79 +4572,58 @@ async function placeEntry(
   );
 
 
+  /*
+   * ==========================================================
+   * 2. 立即保护
+   * ==========================================================
+   */
+
   const stopSide =
 
     side === 'BUY'
-
       ? 'SELL'
-
       : 'BUY';
-
-
-  stopPrice =
-    roundPrice(
-      stopPrice,
-      f.tick
-    );
 
 
   try{
 
-    const stop =
+    await placeProtectiveStop(
 
-      await postForm(
+      symbol,
 
-        '/fapi/v1/order',
+      stopSide,
 
-        {
-
-          symbol,
-
-          side:
-            stopSide,
-
-          type:
-            'STOP_MARKET',
-
-          stopPrice,
-
-          closePosition:
-            'true',
-
-          workingType:
-            'MARK_PRICE'
-
-        }
-
-      );
-
-
-    log(
-
-      'STOP_PLACED',
-
-      {
-
-        symbol,
-
-        stopPrice,
-
-        orderId:
-          stop.orderId
-
-      }
+      stopPrice
 
     );
 
   }catch(e){
 
+    /*
+     * ========================================================
+     * STOP 连续失败
+     *
+     * Entry 已经成功。
+     *
+     * 不能把这个情况当成普通 Entry Error。
+     *
+     * 尝试紧急平仓。
+     * ========================================================
+     */
+
     log(
 
-      'STOP_ERROR',
+      'STOP_PROTECTION_FAILED',
 
       {
 
         symbol,
+
+        side,
+
+        executedQty,
+
+        stopPrice,
 
         error:
           e.message
@@ -4211,7 +4633,121 @@ async function placeEntry(
     );
 
 
-    throw e;
+    try{
+
+      await emergencyClosePosition(
+
+        symbol,
+
+        side,
+
+        executedQty
+
+      );
+
+
+      try{
+
+        await syncAccount();
+
+      }catch{}
+
+      throw new Error(
+
+        `${symbol} stop protection failed; emergency flat executed`
+
+      );
+
+    }catch(flatError){
+
+      /*
+       * 如果 flat 本身是我们刚才已经执行成功
+       * 后抛出的错误，则不要重复记录为未保护。
+       */
+
+      if(
+
+        String(
+          flatError.message
+        ).includes(
+          'emergency flat executed'
+        )
+
+      ){
+
+        throw flatError;
+
+      }
+
+
+      /*
+       * ======================================================
+       * 最危险状态：
+       *
+       * Entry 成功
+       * Stop 失败
+       * Emergency Flat 也失败
+       *
+       * 必须明确记录。
+       * ======================================================
+       */
+
+      log(
+
+        'UNPROTECTED_POSITION',
+
+        {
+
+          symbol,
+
+          side,
+
+          executedQty,
+
+          stopPrice,
+
+          stopError:
+            e.message,
+
+          emergencyFlatError:
+            flatError.message
+
+        }
+
+      );
+
+
+      try{
+
+        await syncAccount();
+
+      }catch(syncError){
+
+        log(
+
+          'UNPROTECTED_POSITION_SYNC_ERROR',
+
+          {
+
+            symbol,
+
+            error:
+              syncError.message
+
+          }
+
+        );
+
+      }
+
+
+      throw new Error(
+
+        `${symbol} CRITICAL: entry filled but stop protection and emergency flat both failed`
+
+      );
+
+    }
 
   }
 
@@ -4224,6 +4760,8 @@ async function placeEntry(
 /*
  * ============================================================
  * Evaluate Symbol
+ *
+ * 正式策略逻辑保持不变。
  * ============================================================
  */
 
@@ -4978,7 +5516,6 @@ async function runCycle(){
       if(
         r.closedAt <=
         last
-
       ){
 
         continue;
@@ -5134,7 +5671,6 @@ async function runCycle(){
                 r.signal.side === 'LONG'
 
                   ? 'BUY'
-
                   : 'SELL';
 
 
@@ -5269,7 +5805,6 @@ async function startUserStream(){
       'open',
 
       () =>
-
         log(
           'USER_WS_CONNECTED'
         )
@@ -5513,6 +6048,9 @@ async function init(){
 
     {
 
+      version:
+        VERSION,
+
       base:
         BASE,
 
@@ -5573,13 +6111,9 @@ async function init(){
  */
 
 function json(
-
   res,
-
   status,
-
   data
-
 ){
 
   res.writeHead(
@@ -5615,11 +6149,8 @@ function json(
  */
 
 async function route(
-
   req,
-
   res
-
 ){
 
   const u =
@@ -5657,7 +6188,7 @@ async function route(
             true,
 
           version:
-            '3.7.18.10',
+            VERSION,
 
           autoTrade:
             AUTO_TRADE,
@@ -5798,9 +6329,6 @@ async function route(
 
     /*
      * Funding
-     *
-     * 三个入口全部指向同一个
-     * Public Data Funding Archive。
      */
 
     if(
@@ -6132,6 +6660,9 @@ async function route(
 
     /*
      * Frontend
+     *
+     * 保持原文件名，
+     * 避免前端文件名发生不必要变化。
      */
 
     if(
@@ -6234,13 +6765,9 @@ async function route(
  */
 
 function sendFile(
-
   res,
-
   p,
-
   type
-
 ){
 
   try{
@@ -6308,6 +6835,9 @@ http
         'HTTP_READY',
 
         {
+
+          version:
+            VERSION,
 
           url:
             `http://127.0.0.1:${PORT}`,
