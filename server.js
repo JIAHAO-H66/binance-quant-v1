@@ -9,46 +9,19 @@ app.use(express.static(__dirname));
 
 /*
  * ============================================================
- * Quant V3.7.5 · OOS 数据服务器
+ * Quant V3.7.6 · OOS 数据服务器
  *
  * Binance USD-M Futures
  *
- * 本版本重点：
- *
- * 1. ZIP 文件级缓存
- * 2. 正在下载的 ZIP Promise 共享
- * 3. 全局下载并发限制
- * 4. 下载超时
- * 5. 自动重试
- * 6. Market 请求 Promise 复用
- * 7. 下载状态监控
- *
- * 数据源：
- *
- *     Binance Public Data
- *     https://data.binance.vision
- *
- * 数据方式：
- *
- *     完整月份 → Monthly ZIP
- *     不完整月份 → Daily ZIP
- *
- * 不使用：
- *
- *     fapi.binance.com
- *
- * ============================================================
- */
-
-
-/*
- * ============================================================
+ * K线数据：
  * Binance Public Data
+ *
+ * Funding：
+ * Binance USD-M Futures
+ * /fapi/v1/fundingRate
+ *
  * ============================================================
  */
-
-const BINANCE_DATA_BASE =
-  "https://data.binance.vision";
 
 
 /*
@@ -58,20 +31,32 @@ const BINANCE_DATA_BASE =
  */
 
 const SERVER_VERSION =
-  "V3.7.5";
+  "V3.7.6";
+
+
+/*
+ * ============================================================
+ * Binance 数据源
+ * ============================================================
+ */
+
+const BINANCE_DATA_BASE =
+  "https://data.binance.vision";
+
+
+/*
+ * ============================================================
+ * Binance Funding API
+ * ============================================================
+ */
+
+const BINANCE_FUNDING_BASE =
+  "https://fapi.binance.com";
 
 
 /*
  * ============================================================
  * 固定 OOS
- *
- * OOS：
- *
- * 2026-09-01 00:00 UTC
- * →
- * 2026-09-26 00:00 UTC
- *
- * backtestEnd 为排他时间。
  * ============================================================
  */
 
@@ -103,54 +88,36 @@ const DEFAULT_WARMUP_START =
  * ============================================================
  * 下载控制
  * ============================================================
- *
- * 同时最多 4 个网络下载。
- *
- * ============================================================
  */
 
 const DOWNLOAD_CONCURRENCY =
   4;
 
 
-/*
- * ============================================================
- * 单个 ZIP 超时时间
- *
- * 45 秒。
- *
- * ============================================================
- */
-
 const DOWNLOAD_TIMEOUT =
   45 * 1000;
 
-
-/*
- * ============================================================
- * 最大重试次数
- *
- * attempt：
- *
- * 1
- * 2
- * 3
- *
- * ============================================================
- */
 
 const MAX_RETRIES =
   2;
 
 
+const RETRY_BASE_DELAY =
+  1500;
+
+
 /*
  * ============================================================
- * 重试等待
+ * Funding 控制
  * ============================================================
  */
 
-const RETRY_BASE_DELAY =
-  1500;
+const FUNDING_TIMEOUT =
+  30 * 1000;
+
+
+const FUNDING_LIMIT =
+  1000;
 
 
 /*
@@ -169,16 +136,7 @@ const downloadQueue =
 
 /*
  * ============================================================
- * ZIP 数据缓存
- *
- * key：
- *
- * URL
- *
- * value：
- *
- * Promise 或已经解析好的 rows
- *
+ * Cache
  * ============================================================
  */
 
@@ -186,28 +144,23 @@ const zipCache =
   new Map();
 
 
-/*
- * ============================================================
- * Market 请求缓存
- *
- * 防止用户连续点击回测，
- * 同一个 market 请求被重复执行。
- *
- * ============================================================
- */
+const historicalCache =
+  new Map();
+
 
 const marketRequestCache =
   new Map();
 
 
-/*
- * ============================================================
- * 历史 K 线缓存
- *
- * ============================================================
- */
+const fundingCache =
+  new Map();
 
-const historicalCache =
+
+const fundingRequestCache =
+  new Map();
+
+
+const progressState =
   new Map();
 
 
@@ -219,33 +172,31 @@ const historicalCache =
 
 const downloadStats = {
 
-  totalRequested: 0,
+  totalRequested:
+    0,
 
-  queueAdded: 0,
+  queueAdded:
+    0,
 
-  cacheHits: 0,
+  cacheHits:
+    0,
 
-  promiseHits: 0,
+  promiseHits:
+    0,
 
-  completed: 0,
+  completed:
+    0,
 
-  notFound: 0,
+  notFound:
+    0,
 
-  failed: 0,
+  failed:
+    0,
 
-  retried: 0
+  retried:
+    0
 
 };
-
-
-/*
- * ============================================================
- * 当前数据准备状态
- * ============================================================
- */
-
-const progressState =
-  new Map();
 
 
 /*
@@ -291,37 +242,30 @@ function parseDateParam(
   }
 
 
-  const number =
+  const n =
     Number(value);
 
 
   if(
-    Number.isFinite(number)
+    Number.isFinite(n)
   ){
 
-    return number < 1e12
-      ? number * 1000
-      : number;
+    return n < 1e12
+      ? n * 1000
+      : n;
 
   }
 
 
-  const time =
+  const t =
     Date.parse(
       String(value)
     );
 
 
-  if(
-    Number.isFinite(time)
-  ){
-
-    return time;
-
-  }
-
-
-  return NaN;
+  return Number.isFinite(t)
+    ? t
+    : NaN;
 
 }
 
@@ -386,7 +330,7 @@ function addUtcMonths(
 
 /*
  * ============================================================
- * 月份列表
+ * 月份范围
  * ============================================================
  */
 
@@ -404,7 +348,7 @@ function monthRange(
     );
 
 
-  const lastMonth =
+  const last =
     floorUtcMonth(
 
       Math.max(
@@ -418,42 +362,36 @@ function monthRange(
     );
 
 
-  const result = [];
+  const out = [];
 
 
   for(
 
-    let timestamp = start;
+    let t = start;
 
-    timestamp <= lastMonth;
+    t <= last;
 
-    timestamp =
+    t =
       addUtcMonths(
-
-        timestamp,
-
+        t,
         1
-
       )
 
   ){
 
     const date =
-      new Date(timestamp);
+      new Date(t);
 
 
-    result.push({
+    out.push({
 
       start:
-        timestamp,
+        t,
 
       end:
         addUtcMonths(
-
-          timestamp,
-
+          t,
           1
-
         ),
 
       year:
@@ -477,14 +415,14 @@ function monthRange(
   }
 
 
-  return result;
+  return out;
 
 }
 
 
 /*
  * ============================================================
- * 日期列表
+ * 日期范围
  * ============================================================
  */
 
@@ -496,57 +434,54 @@ function dayRange(
 
 ){
 
-  const result = [];
+  const out = [];
 
 
-  const ONE_DAY =
-    24 *
-    60 *
-    60 *
-    1000;
+  const DAY =
+    86400000;
 
 
-  const startDate =
+  const date =
     new Date(
       startMs
     );
 
 
-  let cursor =
+  let t =
     Date.UTC(
 
-      startDate.getUTCFullYear(),
+      date.getUTCFullYear(),
 
-      startDate.getUTCMonth(),
+      date.getUTCMonth(),
 
-      startDate.getUTCDate()
+      date.getUTCDate()
 
     );
 
 
   while(
-    cursor < endMs
+    t < endMs
   ){
 
-    const date =
-      new Date(cursor);
+    const x =
+      new Date(t);
 
 
-    result.push({
+    out.push({
 
       start:
-        cursor,
+        t,
 
       end:
-        cursor + ONE_DAY,
+        t + DAY,
 
       year:
-        date.getUTCFullYear(),
+        x.getUTCFullYear(),
 
       month:
         String(
 
-          date.getUTCMonth() + 1
+          x.getUTCMonth() + 1
 
         ).padStart(
 
@@ -559,7 +494,7 @@ function dayRange(
       day:
         String(
 
-          date.getUTCDate()
+          x.getUTCDate()
 
         ).padStart(
 
@@ -572,13 +507,12 @@ function dayRange(
     });
 
 
-    cursor +=
-      ONE_DAY;
+    t += DAY;
 
   }
 
 
-  return result;
+  return out;
 
 }
 
@@ -625,13 +559,9 @@ function resolveRange(req){
 
   if(
 
-    !Number.isFinite(
-      oosStart
-    ) ||
+    !Number.isFinite(oosStart) ||
 
-    !Number.isFinite(
-      oosEnd
-    ) ||
+    !Number.isFinite(oosEnd) ||
 
     oosEnd <= oosStart
 
@@ -647,18 +577,13 @@ function resolveRange(req){
 
 
   if(
-    !Number.isFinite(
-      warmupStart
-    )
+    !Number.isFinite(warmupStart)
   ){
 
     warmupStart =
       oosStart -
       62 *
-      24 *
-      60 *
-      60 *
-      1000;
+      86400000;
 
   }
 
@@ -763,7 +688,7 @@ function buildDailyUrl(
 
 /*
  * ============================================================
- * 下载队列处理
+ * 下载队列
  * ============================================================
  */
 
@@ -774,7 +699,7 @@ function processDownloadQueue(){
     activeDownloads <
       DOWNLOAD_CONCURRENCY &&
 
-    downloadQueue.length > 0
+    downloadQueue.length
 
   ){
 
@@ -901,26 +826,18 @@ function parseCsv(text){
   }
 
 
-  const lines =
-    text
-      .trim()
-      .split(/\r?\n/);
-
-
   const result = [];
 
 
   for(
+
     const line
-    of lines
+    of text.trim().split(/\r?\n/)
+
   ){
 
     if(
-
-      !line ||
-
       !line.trim()
-
     ){
 
       continue;
@@ -938,24 +855,14 @@ function parseCsv(text){
       );
 
 
-    /*
-     * CSV Header
-     */
-
     if(
-      !Number.isFinite(
-        openTime
-      )
+      !Number.isFinite(openTime)
     ){
 
       continue;
 
     }
 
-
-    /*
-     * 兼容微秒时间戳
-     */
 
     if(
       openTime > 1e15
@@ -1019,17 +926,23 @@ function parseCsv(text){
 
     if(
 
-      !Number.isFinite(open) ||
+      ![
 
-      !Number.isFinite(high) ||
+        open,
 
-      !Number.isFinite(low) ||
+        high,
 
-      !Number.isFinite(close) ||
+        low,
 
-      !Number.isFinite(volume) ||
+        close,
 
-      !Number.isFinite(closeTime)
+        volume,
+
+        closeTime
+
+      ].every(
+        Number.isFinite
+      )
 
     ){
 
@@ -1037,10 +950,6 @@ function parseCsv(text){
 
     }
 
-
-    /*
-     * 基础合法性
-     */
 
     if(
 
@@ -1050,17 +959,10 @@ function parseCsv(text){
 
       low <= 0 ||
 
-      close <= 0
+      close <= 0 ||
 
-    ){
-
-      continue;
-
-    }
-
-
-    if(
       high < low
+
     ){
 
       continue;
@@ -1069,18 +971,15 @@ function parseCsv(text){
 
 
     if(
+
       open < low ||
-      open > high
-    ){
 
-      continue;
+      open > high ||
 
-    }
-
-
-    if(
       close < low ||
+
       close > high
+
     ){
 
       continue;
@@ -1125,22 +1024,15 @@ function extractZipCsv(
 ){
 
   if(
-    !Buffer.isBuffer(buffer)
+
+    !Buffer.isBuffer(buffer) ||
+
+    !buffer.length
+
   ){
 
     throw new Error(
-      "ZIP 数据不是有效 Buffer"
-    );
-
-  }
-
-
-  if(
-    buffer.length === 0
-  ){
-
-    throw new Error(
-      "ZIP 数据为空"
+      "ZIP 数据为空或无效"
     );
 
   }
@@ -1152,26 +1044,24 @@ function extractZipCsv(
     );
 
 
-  const entries =
-    zip.getEntries();
+  const entry =
+    zip
+      .getEntries()
+      .find(
 
+        e =>
 
-  const csvEntry =
-    entries.find(
+          !e.isDirectory &&
 
-      entry =>
+          e.entryName
+            .toLowerCase()
+            .endsWith(".csv")
 
-        !entry.isDirectory &&
-
-        entry.entryName
-          .toLowerCase()
-          .endsWith(".csv")
-
-    );
+      );
 
 
   if(
-    !csvEntry
+    !entry
   ){
 
     throw new Error(
@@ -1181,14 +1071,12 @@ function extractZipCsv(
   }
 
 
-  const text =
-    csvEntry
-      .getData()
-      .toString("utf8");
-
-
   return parseCsv(
-    text
+
+    entry
+      .getData()
+      .toString("utf8")
+
   );
 
 }
@@ -1197,25 +1085,6 @@ function extractZipCsv(
 /*
  * ============================================================
  * ZIP 下载
- *
- * 这是 V3.7.5 最重要的修改。
- *
- * 同一个 URL：
- *
- * 第一次：
- *
- *     真正下载
- *
- * 第二次：
- *
- *     直接共享第一次 Promise
- *
- * 第三次：
- *
- *     继续共享
- *
- * 不会重复请求 Binance。
- *
  * ============================================================
  */
 
@@ -1230,12 +1099,6 @@ function downloadZip(
   downloadStats.totalRequested++;
 
 
-  /*
-   * ==========================================================
-   * 已完成缓存
-   * ==========================================================
-   */
-
   const cached =
     zipCache.get(
       url
@@ -1246,27 +1109,12 @@ function downloadZip(
     cached
   ){
 
-    /*
-     * 如果是 Promise：
-     *
-     * 代表正在下载。
-     */
-
     if(
-      cached &&
-      typeof cached.then === "function"
+      typeof cached.then ===
+      "function"
     ){
 
       downloadStats.promiseHits++;
-
-
-      console.log(
-
-        `[ZIP WAIT]`,
-
-        description
-
-      );
 
 
       return cached;
@@ -1274,22 +1122,7 @@ function downloadZip(
     }
 
 
-    /*
-     * 如果是数组：
-     *
-     * 代表已经下载完成。
-     */
-
     downloadStats.cacheHits++;
-
-
-    console.log(
-
-      `[ZIP CACHE HIT]`,
-
-      description
-
-    );
 
 
     return Promise.resolve(
@@ -1298,12 +1131,6 @@ function downloadZip(
 
   }
 
-
-  /*
-   * ==========================================================
-   * 创建真正的下载 Promise
-   * ==========================================================
-   */
 
   const promise =
     enqueueDownload(
@@ -1324,37 +1151,22 @@ function downloadZip(
 
         ){
 
-          let controller =
-            null;
-
-
           let timeoutId =
             null;
 
 
           try{
 
-            console.log(
-
-              `[DOWNLOAD ${attempt + 1}/${MAX_RETRIES + 1}]`,
-
-              description
-
-            );
-
-
-            controller =
+            const controller =
               new AbortController();
 
 
             timeoutId =
               setTimeout(
 
-                () => {
+                () =>
 
-                  controller.abort();
-
-                },
+                  controller.abort(),
 
                 DOWNLOAD_TIMEOUT
 
@@ -1374,7 +1186,7 @@ function downloadZip(
                   headers:{
 
                     "User-Agent":
-                      "Quant-V3.7.5"
+                      "Quant-V3.7.6"
 
                   }
 
@@ -1383,25 +1195,14 @@ function downloadZip(
               );
 
 
-            if(
+            clearTimeout(
               timeoutId
-            ){
-
-              clearTimeout(
-                timeoutId
-              );
-
-              timeoutId =
-                null;
-
-            }
+            );
 
 
-            /*
-             * ==================================================
-             * 404
-             * ==================================================
-             */
+            timeoutId =
+              null;
+
 
             if(
               response.status === 404
@@ -1410,60 +1211,19 @@ function downloadZip(
               downloadStats.notFound++;
 
 
-              console.log(
-
-                `[404]`,
-
-                description
-
-              );
-
-
               return [];
 
             }
 
 
-            /*
-             * ==================================================
-             * 429
-             *
-             * 服务器限流。
-             * ==================================================
-             */
-
             if(
-              response.status === 429
-            ){
 
-              throw new Error(
-                "HTTP 429 Too Many Requests"
-              );
+              response.status === 429 ||
 
-            }
+              response.status >= 500 ||
 
-
-            /*
-             * ==================================================
-             * 5xx
-             * ==================================================
-             */
-
-            if(
-              response.status >= 500
-            ){
-
-              throw new Error(
-
-                `HTTP ${response.status}`
-
-              );
-
-            }
-
-
-            if(
               !response.ok
+
             ){
 
               throw new Error(
@@ -1473,40 +1233,16 @@ function downloadZip(
               );
 
             }
-
-
-            /*
-             * ==================================================
-             * 下载
-             * ==================================================
-             */
-
-            const arrayBuffer =
-              await response.arrayBuffer();
 
 
             const buffer =
               Buffer.from(
-                arrayBuffer
+
+                await response
+                  .arrayBuffer()
+
               );
 
-
-            if(
-              buffer.length === 0
-            ){
-
-              throw new Error(
-                "服务器返回空文件"
-              );
-
-            }
-
-
-            /*
-             * ==================================================
-             * ZIP 解析
-             * ==================================================
-             */
 
             const rows =
               extractZipCsv(
@@ -1514,18 +1250,14 @@ function downloadZip(
               );
 
 
+            downloadStats.completed++;
+
+
             console.log(
 
-              `[DOWNLOAD OK]`,
-
-              description,
-
-              `candles=${rows.length}`
+              `[DOWNLOAD OK] ${description} candles=${rows.length}`
 
             );
-
-
-            downloadStats.completed++;
 
 
             return rows;
@@ -1547,39 +1279,6 @@ function downloadZip(
               error;
 
 
-            let message =
-              error?.message ||
-              "未知错误";
-
-
-            if(
-              error?.name ===
-              "AbortError"
-            ){
-
-              message =
-                "下载超时";
-
-            }
-
-
-            console.error(
-
-              `[DOWNLOAD ERROR]`,
-
-              description,
-
-              message
-
-            );
-
-
-            /*
-             * ==================================================
-             * 是否重试
-             * ==================================================
-             */
-
             if(
               attempt >= MAX_RETRIES
             ){
@@ -1592,27 +1291,15 @@ function downloadZip(
             downloadStats.retried++;
 
 
-            const waitMs =
+            await sleep(
+
               RETRY_BASE_DELAY *
+
               Math.pow(
                 2,
                 attempt
-              );
+              )
 
-
-            console.log(
-
-              `[RETRY]`,
-
-              description,
-
-              `${waitMs}ms`
-
-            );
-
-
-            await sleep(
-              waitMs
             );
 
           }
@@ -1636,19 +1323,6 @@ function downloadZip(
     );
 
 
-  /*
-   * ==========================================================
-   * 立即放入 ZIP Promise Cache
-   *
-   * 注意：
-   *
-   * 必须在下载开始之前放进去。
-   *
-   * 这样其它周期看到同一个 URL，
-   * 会直接共享这个 Promise。
-   * ==========================================================
-   */
-
   zipCache.set(
 
     url,
@@ -1657,18 +1331,6 @@ function downloadZip(
 
   );
 
-
-  /*
-   * ==========================================================
-   * 下载成功：
-   *
-   * Promise → rows
-   *
-   * 下载失败：
-   *
-   * 删除缓存
-   * ==========================================================
-   */
 
   promise
 
@@ -1712,7 +1374,7 @@ function downloadZip(
  * ============================================================
  */
 
-async function downloadMonthly(
+function downloadMonthly(
 
   symbol,
 
@@ -1724,7 +1386,8 @@ async function downloadMonthly(
 
 ){
 
-  const url =
+  return downloadZip(
+
     buildMonthlyUrl(
 
       symbol,
@@ -1735,12 +1398,7 @@ async function downloadMonthly(
 
       month
 
-    );
-
-
-  return downloadZip(
-
-    url,
+    ),
 
     `${symbol} ${interval} ${year}-${month} Monthly`
 
@@ -1755,7 +1413,7 @@ async function downloadMonthly(
  * ============================================================
  */
 
-async function downloadDaily(
+function downloadDaily(
 
   symbol,
 
@@ -1769,7 +1427,8 @@ async function downloadDaily(
 
 ){
 
-  const url =
+  return downloadZip(
+
     buildDailyUrl(
 
       symbol,
@@ -1782,12 +1441,7 @@ async function downloadDaily(
 
       day
 
-    );
-
-
-  return downloadZip(
-
-    url,
+    ),
 
     `${symbol} ${interval} ${year}-${month}-${day} Daily`
 
@@ -1798,7 +1452,7 @@ async function downloadDaily(
 
 /*
  * ============================================================
- * 去重
+ * K线去重
  * ============================================================
  */
 
@@ -1836,7 +1490,8 @@ function deduplicateKlines(
 
   return Array.from(
     map.values()
-  ).sort(
+  )
+  .sort(
 
     (a,b) =>
 
@@ -1850,7 +1505,7 @@ function deduplicateKlines(
 
 /*
  * ============================================================
- * 判断月份是否完整结束
+ * 判断月份是否完成
  * ============================================================
  */
 
@@ -1858,15 +1513,14 @@ function isCompletedMonth(
   month
 ){
 
-  const currentMonthStart =
+  return (
+
+    month.end <=
+
     floorUtcMonth(
       Date.now()
-    );
+    )
 
-
-  return (
-    month.end <=
-    currentMonthStart
   );
 
 }
@@ -1874,7 +1528,7 @@ function isCompletedMonth(
 
 /*
  * ============================================================
- * 创建进度对象
+ * Progress
  * ============================================================
  */
 
@@ -1890,7 +1544,7 @@ function createProgress(
     `${symbol}:${interval}`;
 
 
-  const progress = {
+  const p = {
 
     key,
 
@@ -1930,20 +1584,14 @@ function createProgress(
 
   progressState.set(
     key,
-    progress
+    p
   );
 
 
-  return progress;
+  return p;
 
 }
 
-
-/*
- * ============================================================
- * 更新进度
- * ============================================================
- */
 
 function getProgress(
 
@@ -1953,18 +1601,22 @@ function getProgress(
 
 ){
 
-  return progressState.get(
+  return (
 
-    `${symbol}:${interval}`
+    progressState.get(
 
-  ) || null;
+      `${symbol}:${interval}`
+
+    ) || null
+
+  );
 
 }
 
 
 /*
  * ============================================================
- * 获取历史 K 线
+ * Historical Klines
  * ============================================================
  */
 
@@ -2005,12 +1657,6 @@ async function fetchHistoricalKlines(
     `${oosEnd}`;
 
 
-  /*
-   * ==========================================================
-   * Historical Cache
-   * ==========================================================
-   */
-
   const cached =
     historicalCache.get(
       cacheKey
@@ -2021,27 +1667,10 @@ async function fetchHistoricalKlines(
     cached
   ){
 
-    console.log(
-
-      `[HISTORICAL CACHE HIT]`,
-
-      symbol,
-
-      interval
-
-    );
-
-
     return cached;
 
   }
 
-
-  /*
-   * ==========================================================
-   * 创建进度
-   * ==========================================================
-   */
 
   const progress =
     createProgress(
@@ -2053,12 +1682,6 @@ async function fetchHistoricalKlines(
     );
 
 
-  /*
-   * ==========================================================
-   * Promise Cache
-   * ==========================================================
-   */
-
   const promise =
     (async() => {
 
@@ -2066,17 +1689,6 @@ async function fetchHistoricalKlines(
 
         progress.status =
           "loading";
-
-
-        console.log(
-
-          `[DATA START]`,
-
-          symbol,
-
-          interval
-
-        );
 
 
         const months =
@@ -2093,9 +1705,7 @@ async function fetchHistoricalKlines(
 
 
         /*
-         * ====================================================
-         * 先统计任务
-         * ====================================================
+         * 统计任务
          */
 
         for(
@@ -2166,9 +1776,7 @@ async function fetchHistoricalKlines(
 
 
         /*
-         * ====================================================
-         * 开始下载
-         * ====================================================
+         * 下载
          */
 
         for(
@@ -2205,12 +1813,6 @@ async function fetchHistoricalKlines(
           }
 
 
-          /*
-           * ==================================================
-           * Monthly
-           * ==================================================
-           */
-
           if(
 
             isCompletedMonth(
@@ -2224,19 +1826,6 @@ async function fetchHistoricalKlines(
               month.end
 
           ){
-
-            console.log(
-
-              `[MONTHLY]`,
-
-              symbol,
-
-              interval,
-
-              `${month.year}-${month.month}`
-
-            );
-
 
             const rows =
               await downloadMonthly(
@@ -2255,115 +1844,68 @@ async function fetchHistoricalKlines(
             progress.monthlyDone++;
 
 
-            if(
-              rows.length
+            all.push(
+              ...rows
+            );
+
+          }else{
+
+            const jobs =
+
+              dayRange(
+
+                monthStart,
+
+                monthEnd
+
+              ).map(
+
+                day =>
+
+                  downloadDaily(
+
+                    symbol,
+
+                    interval,
+
+                    day.year,
+
+                    day.month,
+
+                    day.day
+
+                  )
+
+                  .then(
+
+                    rows => {
+
+                      progress.dailyDone++;
+
+
+                      return rows;
+
+                    }
+
+                  )
+
+              );
+
+
+            const daily =
+              await Promise.all(
+                jobs
+              );
+
+
+            for(
+              const rows
+              of daily
             ){
 
-              all =
-                all.concat(
-                  rows
-                );
-
-            }
-
-
-            continue;
-
-          }
-
-
-          /*
-           * ==================================================
-           * Daily
-           * ==================================================
-           */
-
-          console.log(
-
-            `[DAILY]`,
-
-            symbol,
-
-            interval,
-
-            `${month.year}-${month.month}`
-
-          );
-
-
-          const days =
-            dayRange(
-
-              monthStart,
-
-              monthEnd
-
-            );
-
-
-          /*
-           * ==================================================
-           * Daily 请求全部进入全局队列。
-           *
-           * Promise.all 不会造成同时发几十个网络请求，
-           * 因为真正 fetch 在 downloadQueue 中。
-           * ==================================================
-           */
-
-          const jobs =
-            days.map(
-
-              day =>
-
-                downloadDaily(
-
-                  symbol,
-
-                  interval,
-
-                  day.year,
-
-                  day.month,
-
-                  day.day
-
-                )
-
-                .then(
-
-                  rows => {
-
-                    progress.dailyDone++;
-
-
-                    return rows;
-
-                  }
-
-                )
-
-            );
-
-
-          const dailyData =
-            await Promise.all(
-              jobs
-            );
-
-
-          for(
-            const rows
-            of dailyData
-          ){
-
-            if(
-              rows.length
-            ){
-
-              all =
-                all.concat(
-                  rows
-                );
+              all.push(
+                ...rows
+              );
 
             }
 
@@ -2372,23 +1914,11 @@ async function fetchHistoricalKlines(
         }
 
 
-        /*
-         * ====================================================
-         * 去重
-         * ====================================================
-         */
-
         const unique =
           deduplicateKlines(
             all
           );
 
-
-        /*
-         * ====================================================
-         * 最终过滤
-         * ====================================================
- */
 
         const result =
           unique.filter(
@@ -2405,45 +1935,17 @@ async function fetchHistoricalKlines(
 
 
         if(
-          result.length === 0
+          !result.length
         ){
 
           throw new Error(
 
-            `${symbol} ${interval}：` +
-
-            `指定时间范围没有历史K线`
+            `${symbol} ${interval}：指定时间范围没有历史K线`
 
           );
 
         }
 
-
-        /*
-         * ====================================================
-         * 第一根 / 最后一根
-         * ====================================================
-         */
-
-        const first =
-          result[0].openTime;
-
-
-        const last =
-          result[
-            result.length - 1
-          ].openTime;
-
-
-        progress.candles =
-          result.length;
-
-
-        /*
-         * ====================================================
-         * OOS 检查
-         * ====================================================
-         */
 
         const oosRows =
           result.filter(
@@ -2460,25 +1962,21 @@ async function fetchHistoricalKlines(
 
 
         if(
-          oosRows.length === 0
+          !oosRows.length
         ){
 
           throw new Error(
 
-            `${symbol} ${interval}：` +
-
-            `OOS 区间没有数据`
+            `${symbol} ${interval}：OOS 区间没有数据`
 
           );
 
         }
 
 
-        /*
-         * ====================================================
-         * 完成
-         * ====================================================
-         */
+        progress.candles =
+          result.length;
+
 
         progress.status =
           "ready";
@@ -2486,53 +1984,6 @@ async function fetchHistoricalKlines(
 
         progress.finishedAt =
           nowIso();
-
-
-        console.log(
-
-          `[DATA READY]`,
-
-          symbol,
-
-          interval,
-
-          `candles=${result.length}`
-
-        );
-
-
-        console.log(
-
-          `[DATA RANGE]`,
-
-          symbol,
-
-          interval,
-
-          `${new Date(
-            first
-          ).toISOString()}`,
-
-          "→",
-
-          `${new Date(
-            last
-          ).toISOString()}`
-
-        );
-
-
-        console.log(
-
-          `[OOS READY]`,
-
-          symbol,
-
-          interval,
-
-          `candles=${oosRows.length}`
-
-        );
 
 
         return result;
@@ -2558,12 +2009,6 @@ async function fetchHistoricalKlines(
     })();
 
 
-  /*
-   * ==========================================================
-   * 立即缓存 Promise
-   * ==========================================================
-   */
-
   historicalCache.set(
 
     cacheKey,
@@ -2572,13 +2017,6 @@ async function fetchHistoricalKlines(
 
   );
 
-
-  /*
-   * ==========================================================
-   * 成功保持缓存
-   * 失败删除
-   * ==========================================================
-   */
 
   promise.catch(
 
@@ -2672,7 +2110,13 @@ function getMeta(
       historicalCache.size,
 
     marketRequestCacheSize:
-      marketRequestCache.size
+      marketRequestCache.size,
+
+    fundingCacheSize:
+      fundingCache.size,
+
+    fundingRequestCacheSize:
+      fundingRequestCache.size
 
   };
 
@@ -2682,25 +2126,6 @@ function getMeta(
 /*
  * ============================================================
  * Market Request
- *
- * 这是第二层防重复。
- *
- * 用户连续点击：
- *
- *     第一次点击
- *     ↓
- *     开始准备数据
- *
- *     第二次点击
- *     ↓
- *     直接等待第一次
- *
- *     第三次点击
- *     ↓
- *     仍然等待第一次
- *
- * 不会重新建立整套数据任务。
- *
  * ============================================================
  */
 
@@ -2735,15 +2160,6 @@ async function executeMarketRequest(
     existing
   ){
 
-    console.log(
-
-      `[MARKET REQUEST SHARED]`,
-
-      symbol
-
-    );
-
-
     return existing;
 
   }
@@ -2751,74 +2167,6 @@ async function executeMarketRequest(
 
   const promise =
     (async() => {
-
-      console.log(
-        "=============================================="
-      );
-
-
-      console.log(
-
-        `${SERVER_VERSION} Market request:`,
-
-        symbol
-
-      );
-
-
-      console.log(
-
-        "OOS:",
-
-        new Date(
-          range.oosStart
-        ).toISOString(),
-
-        "→",
-
-        new Date(
-          range.oosEnd
-        ).toISOString()
-
-      );
-
-
-      console.log(
-
-        "Warmup:",
-
-        new Date(
-          range.warmupStart
-        ).toISOString(),
-
-        "→",
-
-        new Date(
-          range.oosStart
-        ).toISOString()
-
-      );
-
-
-      console.log(
-
-        "Download concurrency:",
-
-        DOWNLOAD_CONCURRENCY
-
-      );
-
-
-      console.log(
-        "=============================================="
-      );
-
-
-      /*
-       * ======================================================
-       * 三周期
-       * ======================================================
-       */
 
       const [
 
@@ -2865,38 +2213,35 @@ async function executeMarketRequest(
         ]);
 
 
-      /*
-       * ======================================================
-       * 完整性检查
-       * ======================================================
-       */
-
-      const datasets = [
-
-        [
-          "4h",
-          data4h
-        ],
-
-        [
-          "1h",
-          data1h
-        ],
-
-        [
-          "15m",
-          data15m
-        ]
-
-      ];
-
-
       for(
+
         const [
+
           name,
+
           data
+
         ]
-        of datasets
+
+        of [
+
+          [
+            "4h",
+            data4h
+          ],
+
+          [
+            "1h",
+            data1h
+          ],
+
+          [
+            "15m",
+            data15m
+          ]
+
+        ]
+
       ){
 
         const oosRows =
@@ -2914,54 +2259,18 @@ async function executeMarketRequest(
 
 
         if(
-          oosRows.length === 0
+          !oosRows.length
         ){
 
           throw new Error(
 
-            `${symbol} ${name}：` +
-
-            `OOS ` +
-
-            `${new Date(
-              range.oosStart
-            ).toISOString()} ` +
-
-            `→ ` +
-
-            `${new Date(
-              range.oosEnd
-            ).toISOString()} ` +
-
-            `没有数据`
+            `${symbol} ${name}：OOS 区间没有数据`
 
           );
 
         }
 
-
-        console.log(
-
-          `[CHECK OK]`,
-
-          symbol,
-
-          name,
-
-          `OOS candles=${oosRows.length}`
-
-        );
-
       }
-
-
-      console.log(
-
-        `[MARKET READY]`,
-
-        symbol
-
-      );
 
 
       return {
@@ -3006,6 +2315,621 @@ async function executeMarketRequest(
 
 /*
  * ============================================================
+ * Funding Rate
+ *
+ * Binance USD-M Futures
+ *
+ * /fapi/v1/fundingRate
+ * ============================================================
+ */
+
+async function fetchFundingPage({
+
+  symbol,
+
+  startTime,
+
+  endTime,
+
+  limit = FUNDING_LIMIT
+
+}){
+
+  const url =
+    new URL(
+
+      "/fapi/v1/fundingRate",
+
+      BINANCE_FUNDING_BASE
+
+    );
+
+
+  url.searchParams.set(
+
+    "symbol",
+
+    symbol
+
+  );
+
+
+  url.searchParams.set(
+
+    "startTime",
+
+    String(
+      startTime
+    )
+
+  );
+
+
+  url.searchParams.set(
+
+    "endTime",
+
+    String(
+      endTime
+    )
+
+  );
+
+
+  url.searchParams.set(
+
+    "limit",
+
+    String(
+
+      Math.min(
+
+        limit,
+
+        FUNDING_LIMIT
+
+      )
+
+    )
+
+  );
+
+
+  const controller =
+    new AbortController();
+
+
+  const timeoutId =
+    setTimeout(
+
+      () =>
+
+        controller.abort(),
+
+      FUNDING_TIMEOUT
+
+    );
+
+
+  try{
+
+    const response =
+      await fetch(
+
+        url,
+
+        {
+
+          signal:
+            controller.signal,
+
+          headers:{
+
+            "User-Agent":
+              "Quant-V3.7.6",
+
+            "Accept":
+              "application/json"
+
+          }
+
+        }
+
+      );
+
+
+    const text =
+      await response.text();
+
+
+    const contentType =
+      response.headers.get(
+
+        "content-type"
+
+      ) || "";
+
+
+    if(
+      !response.ok
+    ){
+
+      throw new Error(
+
+        `Funding API HTTP ${response.status}: ` +
+
+        `${text.slice(0,300)}`
+
+      );
+
+    }
+
+
+    let json;
+
+
+    try{
+
+      json =
+        JSON.parse(
+          text
+        );
+
+    }catch(error){
+
+      throw new Error(
+
+        "Funding API 返回的不是 JSON：" +
+
+        `content-type=${contentType}; ` +
+
+        `body=${text.slice(0,300)}`
+
+      );
+
+    }
+
+
+    if(
+      !Array.isArray(json)
+    ){
+
+      throw new Error(
+
+        "Funding API 返回结构不是数组"
+
+      );
+
+    }
+
+
+    return {
+
+      url:
+        url.toString(),
+
+      status:
+        response.status,
+
+      contentType,
+
+      bytes:
+        Buffer.byteLength(
+
+          text,
+
+          "utf8"
+
+        ),
+
+      rows:
+        json
+
+    };
+
+  }finally{
+
+    clearTimeout(
+      timeoutId
+    );
+
+  }
+
+}
+
+
+/*
+ * ============================================================
+ * Funding History
+ *
+ * 自动分页。
+ * ============================================================
+ */
+
+async function fetchFundingHistory({
+
+  symbol,
+
+  startTime,
+
+  endTime
+
+}){
+
+  const cacheKey =
+
+    `${SERVER_VERSION}:funding:` +
+
+    `${symbol}:` +
+
+    `${startTime}:` +
+
+    `${endTime}`;
+
+
+  const cached =
+    fundingCache.get(
+      cacheKey
+    );
+
+
+  if(
+    cached
+  ){
+
+    return cached;
+
+  }
+
+
+  const existing =
+    fundingRequestCache.get(
+      cacheKey
+    );
+
+
+  if(
+    existing
+  ){
+
+    return existing;
+
+  }
+
+
+  const promise =
+    (async() => {
+
+      const all = [];
+
+
+      let cursor =
+        startTime;
+
+
+      let requestCount =
+        0;
+
+
+      let lastFundingTime =
+        null;
+
+
+      while(
+        cursor <= endTime
+      ){
+
+        requestCount++;
+
+
+        const page =
+          await fetchFundingPage({
+
+            symbol,
+
+            startTime:
+              cursor,
+
+            endTime,
+
+            limit:
+              FUNDING_LIMIT
+
+          });
+
+
+        const rows =
+          page.rows
+
+            .filter(
+
+              row =>
+
+                row &&
+
+                row.symbol ===
+                  symbol &&
+
+                Number.isFinite(
+
+                  Number(
+                    row.fundingTime
+                  )
+
+                ) &&
+
+                Number.isFinite(
+
+                  Number(
+                    row.fundingRate
+                  )
+
+                )
+
+            )
+
+            .sort(
+
+              (a,b) =>
+
+                Number(
+                  a.fundingTime
+                ) -
+
+                Number(
+                  b.fundingTime
+                )
+
+            );
+
+
+        for(
+          const row
+          of rows
+        ){
+
+          const fundingTime =
+            Number(
+              row.fundingTime
+            );
+
+
+          if(
+
+            fundingTime >=
+              startTime &&
+
+            fundingTime <=
+              endTime
+
+          ){
+
+            all.push({
+
+              symbol:
+                row.symbol,
+
+              fundingRate:
+                Number(
+                  row.fundingRate
+                ),
+
+              fundingTime,
+
+              markPrice:
+
+                Number.isFinite(
+
+                  Number(
+                    row.markPrice
+                  )
+
+                )
+
+                  ?
+
+                Number(
+                  row.markPrice
+                )
+
+                  :
+
+                null,
+
+              rateType:
+                row.rateType ||
+                "Regular"
+
+            });
+
+          }
+
+        }
+
+
+        if(
+          !rows.length
+        ){
+
+          break;
+
+        }
+
+
+        const pageLastTime =
+          Number(
+
+            rows[
+              rows.length - 1
+            ].fundingTime
+
+          );
+
+
+        if(
+
+          lastFundingTime !== null &&
+
+          pageLastTime <=
+            lastFundingTime
+
+        ){
+
+          break;
+
+        }
+
+
+        lastFundingTime =
+          pageLastTime;
+
+
+        if(
+          pageLastTime >= endTime
+        ){
+
+          break;
+
+        }
+
+
+        cursor =
+          pageLastTime + 1;
+
+
+        if(
+          rows.length <
+          FUNDING_LIMIT
+        ){
+
+          break;
+
+        }
+
+
+        if(
+          requestCount > 100
+        ){
+
+          throw new Error(
+
+            "Funding API 分页超过 100 次，已停止"
+
+          );
+
+        }
+
+      }
+
+
+      const map =
+        new Map();
+
+
+      for(
+        const row
+        of all
+      ){
+
+        map.set(
+
+          `${row.symbol}:${row.fundingTime}`,
+
+          row
+
+        );
+
+      }
+
+
+      const rows =
+        Array.from(
+          map.values()
+        )
+        .sort(
+
+          (a,b) =>
+
+            a.fundingTime -
+            b.fundingTime
+
+        );
+
+
+      const output = {
+
+        symbol,
+
+        startTime,
+
+        endTime,
+
+        startTimeISO:
+          new Date(
+            startTime
+          ).toISOString(),
+
+        endTimeISO:
+          new Date(
+            endTime
+          ).toISOString(),
+
+        rows,
+
+        count:
+          rows.length,
+
+        requestCount,
+
+        source:
+          `${BINANCE_FUNDING_BASE}/fapi/v1/fundingRate`
+
+      };
+
+
+      fundingCache.set(
+
+        cacheKey,
+
+        output
+
+      );
+
+
+      return output;
+
+    })();
+
+
+  fundingRequestCache.set(
+
+    cacheKey,
+
+    promise
+
+  );
+
+
+  promise.catch(
+
+    () => {
+
+      fundingRequestCache.delete(
+        cacheKey
+      );
+
+    }
+
+  );
+
+
+  return promise;
+
+}
+
+
+/*
+ * ============================================================
  * /api/market
  * ============================================================
  */
@@ -3032,12 +2956,6 @@ app.get(
 
         ).toUpperCase();
 
-
-      /*
-       * ======================================================
-       * Symbol
-       * ======================================================
-       */
 
       if(
 
@@ -3123,21 +3041,11 @@ app.get(
     }catch(error){
 
       console.error(
-        "=============================================="
-      );
-
-
-      console.error(
 
         `${SERVER_VERSION} Market error:`,
 
         error
 
-      );
-
-
-      console.error(
-        "=============================================="
       );
 
 
@@ -3169,9 +3077,200 @@ app.get(
 
 /*
  * ============================================================
- * /api/cache/clear
+ * /api/funding
  *
- * 清除所有缓存。
+ * 这里必须在 SPA fallback 前面。
+ * ============================================================
+ */
+
+app.get(
+
+  "/api/funding",
+
+  async(
+
+    req,
+
+    res
+
+  ) => {
+
+    try{
+
+      const symbol =
+        String(
+
+          req.query.symbol ||
+          ""
+
+        ).toUpperCase();
+
+
+      if(
+
+        !/^[A-Z0-9]{5,20}$/.test(
+          symbol
+        )
+
+      ){
+
+        return res
+
+          .status(400)
+
+          .json({
+
+            ok:false,
+
+            version:
+              SERVER_VERSION,
+
+            error:
+              "symbol 参数错误"
+
+          });
+
+      }
+
+
+      const range =
+        resolveRange(
+          req
+        );
+
+
+      const result =
+        await fetchFundingHistory({
+
+          symbol,
+
+          startTime:
+            range.oosStart,
+
+          endTime:
+            range.oosEnd
+
+        });
+
+
+      return res.json({
+
+        ok:true,
+
+        version:
+          SERVER_VERSION,
+
+        symbol,
+
+        source:
+          result.source,
+
+        startTime:
+          result.startTime,
+
+        endTime:
+          result.endTime,
+
+        startTimeISO:
+          result.startTimeISO,
+
+        endTimeISO:
+          result.endTimeISO,
+
+        count:
+          result.count,
+
+        requestCount:
+          result.requestCount,
+
+        data:
+          result.rows,
+
+        funding:
+          result.rows
+
+      });
+
+    }catch(error){
+
+      console.error(
+
+        "[FUNDING ERROR]",
+
+        error
+
+      );
+
+
+      return res
+
+        .status(502)
+
+        .json({
+
+          ok:false,
+
+          version:
+            SERVER_VERSION,
+
+          error:
+
+            error.message ||
+
+            "Funding API 获取失败"
+
+        });
+
+    }
+
+  }
+
+);
+
+
+/*
+ * ============================================================
+ * /api/funding/cache/clear
+ * ============================================================
+ */
+
+app.get(
+
+  "/api/funding/cache/clear",
+
+  (
+
+    req,
+
+    res
+
+  ) => {
+
+    fundingCache.clear();
+
+    fundingRequestCache.clear();
+
+
+    return res.json({
+
+      ok:true,
+
+      version:
+        SERVER_VERSION,
+
+      message:
+        "Funding 缓存已清除"
+
+    });
+
+  }
+
+);
+
+
+/*
+ * ============================================================
+ * /api/cache/clear
  * ============================================================
  */
 
@@ -3193,29 +3292,11 @@ app.get(
 
     marketRequestCache.clear();
 
+    fundingCache.clear();
+
+    fundingRequestCache.clear();
 
     progressState.clear();
-
-
-    console.log(
-
-      "=============================================="
-
-    );
-
-
-    console.log(
-
-      "ALL MARKET CACHE CLEARED"
-
-    );
-
-
-    console.log(
-
-      "=============================================="
-
-    );
 
 
     return res.json({
@@ -3226,7 +3307,7 @@ app.get(
         SERVER_VERSION,
 
       message:
-        "行情缓存、历史数据缓存、Market 请求缓存已清除"
+        "行情缓存、历史数据缓存、Market 请求缓存、Funding 缓存已清除"
 
     });
 
@@ -3284,8 +3365,7 @@ app.get(
         cacheSize:
           historicalCache.size,
 
-        activeDownloads:
-          activeDownloads,
+        activeDownloads,
 
         queuedDownloads:
           downloadQueue.length,
@@ -3359,7 +3439,13 @@ app.get(
           historicalCache.size,
 
         marketRequestCache:
-          marketRequestCache.size
+          marketRequestCache.size,
+
+        fundingCache:
+          fundingCache.size,
+
+        fundingRequestCache:
+          fundingRequestCache.size
 
       },
 
@@ -3379,6 +3465,19 @@ app.get(
 
         maxRetries:
           MAX_RETRIES
+
+      },
+
+      funding:{
+
+        base:
+          BINANCE_FUNDING_BASE,
+
+        timeoutMs:
+          FUNDING_TIMEOUT,
+
+        limit:
+          FUNDING_LIMIT
 
       },
 
@@ -3425,8 +3524,7 @@ app.get(
       serverTime:
         nowIso(),
 
-      activeDownloads:
-        activeDownloads,
+      activeDownloads,
 
       queuedDownloads:
         downloadQueue.length,
@@ -3446,8 +3544,6 @@ app.get(
 /*
  * ============================================================
  * /api/health
- *
- * 用于检查 Render 服务是否真的正常运行。
  * ============================================================
  */
 
@@ -3476,18 +3572,8 @@ app.get(
       uptime:
         process.uptime(),
 
-      memory:{
-
-        rss:
-          process.memoryUsage().rss,
-
-        heapUsed:
-          process.memoryUsage().heapUsed,
-
-        heapTotal:
-          process.memoryUsage().heapTotal
-
-      }
+      memory:
+        process.memoryUsage()
 
     });
 
@@ -3498,7 +3584,9 @@ app.get(
 
 /*
  * ============================================================
- * 前端
+ * SPA fallback
+ *
+ * 必须最后。
  * ============================================================
  */
 
@@ -3555,7 +3643,9 @@ app.listen(
 
 
     console.log(
+
       `Quant ${SERVER_VERSION} Server`
+
     );
 
 
@@ -3575,21 +3665,14 @@ app.listen(
 
     console.log(
 
+      "Funding：Binance USD-M Futures /fapi/v1/fundingRate"
+
+    );
+
+
+    console.log(
+
       "市场：Binance USD-M Futures"
-
-    );
-
-
-    console.log(
-
-      "数据方式：Monthly + Daily"
-
-    );
-
-
-    console.log(
-
-      "不使用 fapi.binance.com"
 
     );
 
@@ -3617,20 +3700,6 @@ app.listen(
       "最大重试：",
 
       MAX_RETRIES
-
-    );
-
-
-    console.log(
-
-      "ZIP Promise Cache：启用"
-
-    );
-
-
-    console.log(
-
-      "Market Request Sharing：启用"
 
     );
 
